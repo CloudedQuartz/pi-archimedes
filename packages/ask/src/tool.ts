@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { getBus, Events } from "@pi-archimedes/core/bus";
 import { getBridge } from "@pi-archimedes/core/bridge";
@@ -8,6 +8,7 @@ import { OTHER_OPTION, type AskQuestion } from "./selection.js";
 import { askSingleQuestionWithInlineNote } from "./picker.js";
 import { askQuestionsWithTabs } from "./dialog.js";
 import { renderAskCall, renderAskResult } from "./renderer.js";
+import { emitBlocked, blockedLabel } from "./herdr.js";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -364,62 +365,84 @@ export function registerAskTool(pi: ExtensionAPI): void {
 			// Emit bus event so notify (if installed) can schedule a desktop notification
 			getBus().emit(Events.ASK_REQUEST, { source: "main", requestId: randomUUID(), questions: params.questions, toolCallId: _toolCallId });
 
-			if (params.questions.length === 1) {
-				const q = params.questions[0]!;
-				const selection = q.multi
-					? (await askQuestionsWithTabs(ctx.ui, [q as AskQuestion])).selections[0] ?? { selectedOptions: [] }
-					: await askSingleQuestionWithInlineNote(ctx.ui, q as AskQuestion);
-				const optionLabels = q.options.map((option) => option.label);
-				const desc = q.description && q.description.trim().length > 0 ? q.description : undefined;
-
-				const result: QuestionResult = {
-					id: q.id,
-					question: q.question,
-					description: desc,
-					options: optionLabels,
-					multi: q.multi ?? false,
-					selectedOptions: selection.selectedOptions,
-					customInput: selection.customInput,
-				};
-
-				const details: AskToolDetails = {
-					id: q.id,
-					question: q.question,
-					description: desc,
-					options: optionLabels,
-					multi: q.multi ?? false,
-					selectedOptions: selection.selectedOptions,
-					customInput: selection.customInput,
-					results: [result],
-				};
-
-				return {
-					content: [{ type: "text", text: buildAskSessionContent([result]) }],
-					details,
-				};
+			// Report to herdr's managed extension (inert unless herdr spawned pi — the
+			// event is a no-op otherwise). One pair per dialog; the finally pairs it on
+			// answer, cancel, AND error so the refcount never leaks. (The bridge and
+			// headless paths above are non-TUI — herdr's handler is TUI-only, so they
+			// are intentionally not reported.)
+			emitBlocked(pi, true, blockedLabel(params.questions));
+			try {
+				return await executeTuiAsk(params, ctx);
+			} finally {
+				emitBlocked(pi, false);
 			}
-
-			const results: QuestionResult[] = [];
-			const tabResult = await askQuestionsWithTabs(ctx.ui, params.questions as AskQuestion[]);
-			for (let i = 0; i < params.questions.length; i++) {
-				const q = params.questions[i]!;
-				const selection = tabResult.selections[i] ?? { selectedOptions: [] };
-				const desc = q.description && q.description.trim().length > 0 ? q.description : undefined;
-				results.push({
-					id: q.id,
-					question: q.question,
-					description: desc,
-					options: q.options.map((option) => option.label),
-					multi: q.multi ?? false,
-					selectedOptions: selection.selectedOptions,
-					customInput: selection.customInput,
-				});
-			}
-
-			return {
-				content: [{ type: "text", text: buildAskSessionContent(results) }],
-				details: { results, customInput: undefined, description: undefined } satisfies AskToolDetails,
-			};
 		},
 	});
+}
+
+/**
+ * Show the questions in the TUI (picker for a single non-multi question, tabs
+ * dialog otherwise) and build the tool result. The caller wraps this in the
+ * herdr blocked pairing (emitBlocked true before / false in finally).
+ */
+async function executeTuiAsk(
+	params: AskParams,
+	ctx: ExtensionContext,
+): Promise<AgentToolResult<AskToolDetails>> {
+	if (params.questions.length === 1) {
+		const q = params.questions[0]!;
+		const selection = q.multi
+			? (await askQuestionsWithTabs(ctx.ui, [q as AskQuestion])).selections[0] ?? { selectedOptions: [] }
+			: await askSingleQuestionWithInlineNote(ctx.ui, q as AskQuestion);
+		const optionLabels = q.options.map((option) => option.label);
+		const desc = q.description && q.description.trim().length > 0 ? q.description : undefined;
+
+		const result: QuestionResult = {
+			id: q.id,
+			question: q.question,
+			description: desc,
+			options: optionLabels,
+			multi: q.multi ?? false,
+			selectedOptions: selection.selectedOptions,
+			customInput: selection.customInput,
+		};
+
+		const details: AskToolDetails = {
+			id: q.id,
+			question: q.question,
+			description: desc,
+			options: optionLabels,
+			multi: q.multi ?? false,
+			selectedOptions: selection.selectedOptions,
+			customInput: selection.customInput,
+			results: [result],
+		};
+
+		return {
+			content: [{ type: "text", text: buildAskSessionContent([result]) }],
+			details,
+		};
+	}
+
+	const results: QuestionResult[] = [];
+	const tabResult = await askQuestionsWithTabs(ctx.ui, params.questions as AskQuestion[]);
+	for (let i = 0; i < params.questions.length; i++) {
+		const q = params.questions[i]!;
+		const selection = tabResult.selections[i] ?? { selectedOptions: [] };
+		const desc = q.description && q.description.trim().length > 0 ? q.description : undefined;
+		results.push({
+			id: q.id,
+			question: q.question,
+			description: desc,
+			options: q.options.map((option) => option.label),
+			multi: q.multi ?? false,
+			selectedOptions: selection.selectedOptions,
+			customInput: selection.customInput,
+		});
+	}
+
+	return {
+		content: [{ type: "text", text: buildAskSessionContent(results) }],
+		details: { results, customInput: undefined, description: undefined } satisfies AskToolDetails,
+	};
 }

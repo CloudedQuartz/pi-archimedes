@@ -18,7 +18,7 @@ import { renderAskCall, renderAskResult } from "./renderer.js";
 // Bridge: a mutable state object — `active` flips per test, `ask` is a vi.fn.
 // Picker/dialog: mocked so the TUI branch never touches the real TUI.
 
-const { busState, bridgeState } = vi.hoisted(() => {
+const { busState, bridgeState, eventsState } = vi.hoisted(() => {
 	const listeners: Record<string, Array<(p: unknown) => void>> = {};
 	const emit = vi.fn((event: string, payload: unknown) => {
 		for (const fn of listeners[event] ?? []) {
@@ -45,6 +45,7 @@ const { busState, bridgeState } = vi.hoisted(() => {
 			password: vi.fn(),
 			state: vi.fn(() => "idle"),
 		},
+		eventsState: { emit: vi.fn() }, // pi.events — the shared extension event bus
 	};
 });
 
@@ -82,7 +83,10 @@ function captureTool(): {
 	renderResult?: unknown;
 } {
 	const registered: Array<Record<string, unknown>> = [];
-	registerAskTool({ registerTool: (t: Record<string, unknown>) => registered.push(t) } as unknown as ExtensionAPI);
+	registerAskTool({
+		registerTool: (t: Record<string, unknown>) => registered.push(t),
+		events: eventsState,
+	} as unknown as ExtensionAPI);
 	return registered[0] as ReturnType<typeof captureTool>;
 }
 
@@ -106,6 +110,13 @@ function emitted(event: string): Record<string, unknown>[] {
 		.map((c) => c[1]!) as Record<string, unknown>[];
 }
 
+/** The recorded `pi.events` "herdr:blocked" payloads, in order. */
+function herdrEmits(): Array<{ active: boolean; label?: string }> {
+	return eventsState.emit.mock.calls
+		.filter((c) => c[0] === "herdr:blocked")
+		.map((c) => c[1]!) as Array<{ active: boolean; label?: string }>;
+}
+
 // Relay subscriptions are tracked file-wide and torn down in afterEach (not at
 // the end of each test body) so a failing assertion cannot leak a live relay
 // handler into the next test (double registration → double ASK_RESPONSE).
@@ -117,6 +128,7 @@ afterEach(() => {
 
 beforeEach(() => {
 	busState.emit.mockClear();
+	eventsState.emit.mockClear();
 	bridgeState.active = false;
 	bridgeState.ask.mockReset();
 	vi.mocked(askSingleQuestionWithInlineNote).mockReset();
@@ -354,6 +366,104 @@ describe("TUI branch (bridge inactive, has UI)", () => {
 
 		expect(result.content[0]!.text).toBe("Error: questions must not be empty");
 		expect(busState.emit).not.toHaveBeenCalled();
+		// No dialog shown → no herdr pairing either
+		expect(herdrEmits()).toEqual([]);
+	});
+});
+
+// ── herdr pairing (pi.events 'herdr:blocked') ────────────────────────────
+//
+// herdr's managed extension refcounts the blocked state off this event
+// (+1 on active:true, −1 on active:false; TUI-only). The tool must pair
+// every active:true with exactly one active:false — on answer, cancel,
+// AND error — or the pane is stuck at "blocked".
+
+describe("herdr pairing (TUI)", () => {
+	it("single question, answered: active:true (label = the question) then active:false, in order", async () => {
+		bridgeState.active = false;
+		vi.mocked(askSingleQuestionWithInlineNote).mockResolvedValue({ selectedOptions: ["A"] });
+
+		const tool = captureTool();
+		await tool.execute("tool-7", makeParams(), undefined, undefined, { hasUI: true, ui: {} });
+
+		expect(herdrEmits()).toEqual([
+			{ active: true, label: "Which option?" },
+			{ active: false, label: undefined },
+		]);
+	});
+
+	it("single question, cancelled (empty selection): still paired", async () => {
+		bridgeState.active = false;
+		vi.mocked(askSingleQuestionWithInlineNote).mockResolvedValue({ selectedOptions: [] });
+
+		const tool = captureTool();
+		const result = await tool.execute("tool-8", makeParams(), undefined, undefined, { hasUI: true, ui: {} });
+
+		expect(result.content[0]!.text).toContain("(cancelled)");
+		expect(herdrEmits()).toEqual([
+			{ active: true, label: "Which option?" },
+			{ active: false, label: undefined },
+		]);
+	});
+
+	it("picker error: active:false still emitted (finally) and the error propagates", async () => {
+		bridgeState.active = false;
+		vi.mocked(askSingleQuestionWithInlineNote).mockRejectedValue(new Error("ui crashed"));
+
+		const tool = captureTool();
+		await expect(tool.execute("tool-9", makeParams(), undefined, undefined, { hasUI: true, ui: {} })).rejects.toThrow("ui crashed");
+
+		expect(herdrEmits()).toEqual([
+			{ active: true, label: "Which option?" },
+			{ active: false, label: undefined },
+		]);
+	});
+
+	it("multi question: ONE pair, label = the first question", async () => {
+		bridgeState.active = false;
+		vi.mocked(askQuestionsWithTabs).mockResolvedValue({
+			cancelled: false,
+			selections: [{ selectedOptions: ["A"] }, { selectedOptions: ["B"] }],
+		});
+
+		const tool = captureTool();
+		await tool.execute(
+			"tool-10",
+			{
+				questions: [
+					{ id: "q1", question: "First?", options: [{ label: "A" }] },
+					{ id: "q2", question: "Second?", options: [{ label: "B" }] },
+				],
+			},
+			undefined,
+			undefined,
+			{ hasUI: true, ui: {} },
+		);
+
+		expect(herdrEmits()).toEqual([
+			{ active: true, label: "First?" },
+			{ active: false, label: undefined },
+		]);
+	});
+
+	it("bridge path: NO herdr emit (non-TUI — herdr's handler is a no-op there)", async () => {
+		bridgeState.active = true;
+		bridgeState.ask.mockResolvedValue({ cancelled: false, results: [{ id: "q1", selectedOptions: ["A"] }] });
+
+		const tool = captureTool();
+		await tool.execute("tool-11", makeParams(), undefined, undefined, { hasUI: true, ui: {} });
+
+		expect(herdrEmits()).toEqual([]);
+	});
+
+	it("headless path: NO herdr emit (the child is non-TUI; the parent's relay reports it)", async () => {
+		bridgeState.active = false;
+		delete process.env.PI_SUBAGENT_SOCKET;
+
+		const tool = captureTool();
+		await tool.execute("tool-12", makeParams(), undefined, undefined, { hasUI: false });
+
+		expect(herdrEmits()).toEqual([]);
 	});
 });
 
@@ -363,7 +473,7 @@ describe("ipc-relay", () => {
 	it("bridge active: a subagent ASK_REQUEST is NOT consumed (no picker, no ASK_RESPONSE)", async () => {
 		bridgeState.active = true;
 		const unsubscribes: Array<() => void> = [];
-		registerIpcRelay({} as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
+		registerIpcRelay({ events: eventsState } as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
 		relayUnsubs.push(...unsubscribes);
 
 		busState.emit(Events.ASK_REQUEST, {
@@ -377,13 +487,15 @@ describe("ipc-relay", () => {
 		expect(vi.mocked(askSingleQuestionWithInlineNote)).not.toHaveBeenCalled();
 		expect(vi.mocked(askQuestionsWithTabs)).not.toHaveBeenCalled();
 		expect(emitted(Events.ASK_RESPONSE).length).toBe(0);
+		// Not consumed → no dialog shown → no herdr pairing
+		expect(herdrEmits()).toEqual([]);
 	});
 
 	it("bridge inactive: a subagent ASK_REQUEST is consumed and answered via ASK_RESPONSE (existing behavior)", async () => {
 		bridgeState.active = false;
 		vi.mocked(askSingleQuestionWithInlineNote).mockResolvedValue({ selectedOptions: ["A"] });
 		const unsubscribes: Array<() => void> = [];
-		registerIpcRelay({} as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
+		registerIpcRelay({ events: eventsState } as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
 		relayUnsubs.push(...unsubscribes);
 
 		busState.emit(Events.ASK_REQUEST, {
@@ -399,5 +511,54 @@ describe("ipc-relay", () => {
 		expect(resp.requestId).toBe("relay-2");
 		expect(resp.cancelled).toBe(false);
 		expect(resp.results).toEqual([{ id: "q1", selectedOptions: ["A"], customInput: undefined }]);
+	});
+
+	it("bridge inactive: the parent's dialog pairs a herdr blocked/unblocked (label = the subagent's question)", async () => {
+		bridgeState.active = false;
+		vi.mocked(askSingleQuestionWithInlineNote).mockResolvedValue({ selectedOptions: ["A"] });
+		const unsubscribes: Array<() => void> = [];
+		registerIpcRelay({ events: eventsState } as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
+		relayUnsubs.push(...unsubscribes);
+
+		busState.emit(Events.ASK_REQUEST, {
+			source: "subagent:x",
+			requestId: "relay-3",
+			questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }] }],
+		});
+		await vi.waitFor(() => {
+			expect(emitted(Events.ASK_RESPONSE).length).toBe(1);
+		});
+
+		// The PARENT's TUI is the surface the subagent's dialog appears on — the
+		// child process is headless and its own herdr extension is inert, so the
+		// pairing happens here, in the parent.
+		expect(herdrEmits()).toEqual([
+			{ active: true, label: "Which?" },
+			{ active: false, label: undefined },
+		]);
+	});
+
+	it("bridge inactive, picker error: the herdr pairing still settles (the catch converts it to a cancelled response)", async () => {
+		bridgeState.active = false;
+		vi.mocked(askSingleQuestionWithInlineNote).mockRejectedValue(new Error("ui crashed"));
+		const unsubscribes: Array<() => void> = [];
+		registerIpcRelay({ events: eventsState } as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
+		relayUnsubs.push(...unsubscribes);
+
+		busState.emit(Events.ASK_REQUEST, {
+			source: "subagent:x",
+			requestId: "relay-4",
+			questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }] }],
+		});
+		await vi.waitFor(() => {
+			expect(emitted(Events.ASK_RESPONSE).length).toBe(1);
+		});
+
+		const resp = emitted(Events.ASK_RESPONSE)[0]!;
+		expect(resp.cancelled).toBe(true);
+		expect(herdrEmits()).toEqual([
+			{ active: true, label: "Which?" },
+			{ active: false, label: undefined },
+		]);
 	});
 });

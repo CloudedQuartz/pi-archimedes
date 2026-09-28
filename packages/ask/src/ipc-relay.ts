@@ -4,6 +4,7 @@ import { getBridge } from "@pi-archimedes/core/bridge";
 import { type AskQuestion, type AskSelection } from "./selection.js";
 import { askSingleQuestionWithInlineNote } from "./picker.js";
 import { askQuestionsWithTabs } from "./dialog.js";
+import { emitBlocked, blockedLabel } from "./herdr.js";
 
 export function registerIpcRelay(
 	pi: ExtensionAPI,
@@ -31,7 +32,7 @@ export function registerIpcRelay(
 
 		// Defer to next tick so TUI can process current state
 		await new Promise((resolve) => setImmediate(resolve));
-		await handleAskRequest(data, getCtx);
+		await handleAskRequest(data, getCtx, (active, label) => emitBlocked(pi, active, label));
 	});
 	unsubscribes.push(unsubAskRequest);
 }
@@ -42,6 +43,7 @@ async function handleAskRequest(
 		questions: AskQuestion[];
 	},
 	getCtx: () => ExtensionContext | undefined,
+	reportBlocked: (active: boolean, label?: string) => void,
 ): Promise<void> {
 	const ctx = getCtx();
 	if (!ctx?.ui) return;
@@ -50,6 +52,12 @@ async function handleAskRequest(
 	let cancelled = true;
 	let selections: AskSelection[] = [];
 
+	// Report to herdr's managed extension: the PARENT's TUI is the surface this
+	// subagent's dialog appears on (the child process is headless and its own
+	// herdr extension is inert). Paired in the finally — the existing catch
+	// converts a picker error into a cancelled result, so the dialog always
+	// settles.
+	reportBlocked(true, blockedLabel(questions));
 	try {
 		if (questions.length === 1) {
 			const q = questions[0]!;
@@ -77,6 +85,8 @@ async function handleAskRequest(
 	} catch {
 		cancelled = true;
 		selections = questions.map(() => ({ selectedOptions: [] }));
+	} finally {
+		reportBlocked(false);
 	}
 
 	// Build results matching the request's questions
