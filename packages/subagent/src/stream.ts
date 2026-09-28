@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import type { ChildProcess } from "node:child_process";
 import type { StreamState, SubagentProgress, SubagentResult } from "./types.js";
 import { getBus, Events } from "@pi-archimedes/core/bus";
-import { normalizeTodoItems } from "@pi-archimedes/todo/prepare-args";
+import { normalizeTodoItems, pickTodoListRaw } from "@pi-archimedes/todo/prepare-args";
 import {
   type JsonEvent,
   handleToolStart,
@@ -150,7 +150,9 @@ export function streamEvents(
           emitProgress();
           if (event.toolName === "manage_todo_list" && typeof event.toolCallId === "string") {
             const args = event.args as Record<string, unknown> | undefined;
-            const todoList = args?.todoList;
+            // Raw (pre-prepareArguments) args: the child model may have used
+            // an alias key (todo_list/todos) — pickTodoListRaw covers it.
+            const todoList = pickTodoListRaw(args);
             if (Array.isArray(todoList)) {
               pendingTodoArgs.set(event.toolCallId, todoList);
             }

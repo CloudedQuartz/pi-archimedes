@@ -168,6 +168,64 @@ describe("prepareTodoArguments", () => {
     expect(Object.hasOwn(out, "todoList")).toBe(false);
   });
 
+  it("recovers a list sent under the snake_case key todo_list (stringified JSON)", () => {
+    const out = prepareTodoArguments({
+      operation: "write",
+      todo_list: '[{"content": "Fix auth", "status": "pending"}]',
+    });
+    expect(out).toEqual({ operation: "write", todoList: [{ content: "Fix auth", status: "pending" }] });
+  });
+
+  it("recovers a list sent under the alias key todos (array, legacy item shape)", () => {
+    const out = prepareTodoArguments({ operation: "write", todos: [LEGACY_ITEM] });
+    expect(out).toEqual({ operation: "write", todoList: [{ content: "Fix auth", description: "Y", status: "pending" }] });
+  });
+
+  it("prefers the canonical todoList key over fallback keys", () => {
+    const out = prepareTodoArguments({
+      operation: "write",
+      todoList: [{ content: "canonical", status: "pending" }],
+      todo_list: [{ content: "ignored", status: "pending" }],
+    });
+    expect(out.todoList).toEqual([{ content: "canonical", status: "pending" }]);
+  });
+
+  it("skips a null fallback key and uses the next present one", () => {
+    const out = prepareTodoArguments({
+      operation: "write",
+      todo_list: null,
+      todos: [{ content: "X", status: "pending" }],
+    });
+    expect(out.todoList).toEqual([{ content: "X", status: "pending" }]);
+  });
+
+  it("drops an explicit null todoList even when a fallback key is present", () => {
+    const out = prepareTodoArguments({
+      operation: "write",
+      todoList: null,
+      todos: [{ content: "X", status: "pending" }],
+    });
+    expect(out).toEqual({ operation: "write" });
+    expect(Object.hasOwn(out, "todoList")).toBe(false);
+  });
+
+  it("infers operation=write from a fallback-key list", () => {
+    expect(prepareTodoArguments({ todos: ["x"] }).operation).toBe("write");
+  });
+
+  it("recovers a double-encoded (stringified) arguments object", () => {
+    const out = prepareTodoArguments('{"operation":"write","todo_list":"[\\"a\\"]"}');
+    expect(out).toEqual({ operation: "write", todoList: [{ content: "a", status: "pending" }] });
+  });
+
+  it("passes an unparseable top-level string through untouched", () => {
+    expect(prepareTodoArguments("not json at all")).toBe("not json at all");
+  });
+
+  it("keeps a top-level string that parses to a non-object untouched", () => {
+    expect(prepareTodoArguments("[1, 2]")).toBe("[1, 2]");
+  });
+
   it("wraps a single bare object in an array and drops extra keys (item + top level)", () => {
     const out = prepareTodoArguments({
       operation: "write",

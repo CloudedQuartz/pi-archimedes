@@ -192,6 +192,42 @@ describe("streamEvents todo mirroring", () => {
     ]);
   });
 
+  it("stows raw args under the alias key todo_list (result has no details)", async () => {
+    const updates: Array<{ source: string; todos: unknown[] }> = [];
+    const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>
+      updates.push(p as (typeof updates)[number]),
+    );
+
+    await finishWith(
+      [
+        {
+          type: "tool_execution_start",
+          toolCallId: "t-alias",
+          toolName: "manage_todo_list",
+          args: {
+            operation: "write",
+            todo_list: [{ id: 1, title: "Fix auth", status: "not-started" }],
+          },
+        },
+        {
+          type: "tool_execution_end",
+          toolCallId: "t-alias",
+          toolName: "manage_todo_list",
+          isError: false,
+          result: { content: [{ type: "text", text: "ok" }] },
+        },
+      ],
+      { agent: "t-alias" },
+    );
+    off();
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.source).toBe("subagent:t-alias");
+    expect(updates[0]!.todos).toEqual([
+      { content: "Fix auth", status: "pending" },
+    ]);
+  });
+
   it("does not crash or emit when the end event has no matching start", async () => {
     const updates: Array<{ source: string; todos: unknown[] }> = [];
     const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>

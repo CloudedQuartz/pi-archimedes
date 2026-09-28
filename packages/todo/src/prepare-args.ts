@@ -9,6 +9,11 @@
  *   - `todoList` is a stringified JSON array instead of an array (sometimes
  *     with mangled escaping, e.g. `"id": 1"` — an extra quote after the
  *     number)
+ *   - `todoList` is sent under a different top-level key — `todo_list`
+ *     (snake_case), `todos` (the parameter name of other harnesses' todo
+ *     tools) — observed in real sessions; the payload is dropped entirely
+ *     and the write fails with "todoList required" without this repair
+ *   - the whole arguments object is double-encoded as a JSON string
  *   - items put the task text under `title`/`step` (shapes borrowed from
  *     other harnesses) instead of the canonical `content`
  *   - `id` is invented, omitted, or nulled — the canonical schema has NO
@@ -72,6 +77,24 @@ const STATUS_ALIASES: ReadonlyMap<string, TodoStatus> = new Map<string, TodoStat
  */
 const CONTENT_FALLBACK_KEYS = ["title", "step", "task", "text", "name", "label", "activeForm"] as const;
 const DESCRIPTION_FALLBACK_KEYS = ["details", "notes", "summary", "context"] as const;
+
+/**
+ * Keys the model sometimes uses for the top-level list argument instead of
+ * `todoList` (shapes borrowed from other harnesses: `todo_list` is the
+ * snake_case form, `todos` is the parameter of other harnesses' todo tools).
+ * Checked only when `todoList` itself is absent; first present wins.
+ */
+const TODO_LIST_FALLBACK_KEYS = [
+  "todo_list",
+  "todos",
+  "todo",
+  "todoItems",
+  "todo_items",
+  "todo-items",
+  "task_list",
+  "taskList",
+  "tasks",
+] as const;
 
 /** Reserved keys the last-resort text scan must never pick up. */
 const LAST_RESORT_SKIP_KEYS = new Set<string>([
@@ -263,6 +286,23 @@ function normalizeTodoList(raw: unknown): { value: unknown; kept: boolean } {
   return { value, kept: true }; // Unmendable — original validation error stands
 }
 
+/**
+ * Pick the raw list value out of a record of tool arguments: the canonical
+ * `todoList` key wins when present (even null — an explicit null is honored
+ * over a stray alias); otherwise the first non-nullish fallback key. Returns
+ * undefined when no key is present. Shared with the subagent stream, which
+ * reads raw (pre-prepareArguments) child tool-call args.
+ */
+export function pickTodoListRaw(args: Record_ | undefined | null): unknown {
+  if (!args) return undefined;
+  if (args.todoList !== undefined) return args.todoList;
+  for (const key of TODO_LIST_FALLBACK_KEYS) {
+    const value = args[key];
+    if (value !== undefined && value !== null) return value;
+  }
+  return undefined;
+}
+
 function normalizeOperation(raw: unknown, listPresent: boolean): "write" | "read" {
   if (raw === "write" || raw === "read") return raw;
   if (typeof raw === "string") {
@@ -278,11 +318,23 @@ function normalizeOperation(raw: unknown, listPresent: boolean): "write" | "read
  * Never throws, never mutates its input, and passes through anything it
  * cannot recover.
  */
-export function prepareTodoArguments(args: unknown): ManageTodoListInput {
+export function prepareTodoArguments(rawArgs: unknown): ManageTodoListInput {
+  let args: unknown = rawArgs;
+  if (typeof args === "string") {
+    // The model double-encoded the whole arguments object as a JSON string.
+    // Unparseable, or parsed to a scalar/array — keep the string so the
+    // schema error stays meaningful.
+    try {
+      const parsed: unknown = JSON.parse(args);
+      if (isRecord(parsed)) args = parsed;
+    } catch {
+      // passthrough
+    }
+  }
   if (!isRecord(args)) return args as ManageTodoListInput;
 
-  const normalized =
-    args.todoList === undefined ? undefined : normalizeTodoList(args.todoList);
+  const rawList = pickTodoListRaw(args);
+  const normalized = rawList === undefined ? undefined : normalizeTodoList(rawList);
   const present =
     normalized !== undefined && normalized.kept && normalized.value !== undefined;
 
