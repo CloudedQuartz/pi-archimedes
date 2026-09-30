@@ -118,6 +118,22 @@ export function renderHeader(theme: Theme, ref: ListingRef, width: number, heigh
   return result;
 }
 
+// ── Section text extraction ───────────────────────────────────────────────
+
+/**
+ * Read the full text of a section component.
+ *
+ * pi ≥0.99 builds ExpandableText with constructor closures (no instance
+ * getExpandedText() anymore) and starts collapsed — a plain render() would
+ * return the lossy comma-joined body. setExpanded(true) (pi's own public
+ * expansion API) makes render() return the full per-item body.
+ */
+function expandedText(component: Text): string {
+  const setExpanded = (component as any).setExpanded;
+  if (typeof setExpanded === "function") setExpanded.call(component, true);
+  return stripAnsi(component.render(MAX_RENDER_WIDTH).join("\n"));
+}
+
 // ── Chat container discovery ────────────────────────────────────────────
 
 // Fragile: relies on TUI child ordering (header, chat, footer) which is an
@@ -271,10 +287,12 @@ export function patchStartupListing(
       // pi ≥0.67.6 wraps startup sections in ExpandableText; collapsed body
       // is a lossy comma-joined base-name list. Parse the expanded text so
       // Extensions keep real names instead of "index.ts/index.js/index".
+      // pi ≥0.99 moved the text builders into the constructor (no instance
+      // getExpandedText()) — expandedText() forces expansion via setExpanded().
       const getExpanded = (component as any).getExpandedText;
       const plain = typeof getExpanded === "function"
         ? stripAnsi(getExpanded.call(component))
-        : stripAnsi(component.render(MAX_RENDER_WIDTH).join("\n"));
+        : expandedText(component);
 
       const section = parseSectionText(plain) ?? parseModelScope(plain);
       if (section) {

@@ -77,10 +77,32 @@ function extractItemsFromSection(plain: string, sectionName: SectionKey): string
       sourceIndent = 0;
     }
 
-    const name = extractName(trimmed, sectionName);
-    if (name) names.push(showSource && currentSource ? currentSource + name : name);
+    const itemNames = extractNames(trimmed, sectionName);
+    for (const n of itemNames) {
+      names.push(showSource && currentSource ? currentSource + n : n);
+    }
   }
   return names;
+}
+
+/**
+ * Extract item name(s) from a line.
+ *
+ * Collapsed section bodies are a single comma-joined line ("a, b, c") —
+ * split it so each name is its own item and the listing can wrap, instead
+ * of one clamped line ending in "...". Expanded bodies are per-item path
+ * lines; names never contain ", ", so splitting is safe.
+ */
+function extractNames(line: string, sectionName: SectionKey): string[] {
+  const parts = line.includes(", ")
+    ? line.split(", ").map(p => p.trim()).filter(Boolean)
+    : [line];
+  const out: string[] = [];
+  for (const part of parts) {
+    const name = extractName(part, sectionName);
+    if (name) out.push(name);
+  }
+  return out;
 }
 
 /** Check if a line should be skipped during section parsing. */

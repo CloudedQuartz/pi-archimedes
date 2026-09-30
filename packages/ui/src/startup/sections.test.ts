@@ -116,6 +116,25 @@ describe("parseSectionText", () => {
 		expect(result).not.toBeUndefined();
 		expect(result!.items.length).toBe(0);
 	});
+
+	it("splits a comma-joined collapsed body into items", () => {
+		const text = "[Skills]\n  check-pr, codebase-improvement, daily-summary";
+		const result = parseSectionText(text);
+		expect(result!.name).toBe("Skills");
+		expect(result!.items).toEqual(["check-pr", "codebase-improvement", "daily-summary"]);
+	});
+
+	it("keeps per-item path lines intact (no comma split)", () => {
+		const text = "[Skills]\n  /home/u/skills/alpha/SKILL.md\n  /home/u/skills/beta/SKILL.md";
+		const result = parseSectionText(text);
+		expect(result!.items).toEqual(["alpha", "beta"]);
+	});
+
+	it("prefixes comma-joined items under a source header", () => {
+		const text = "[Extensions]\n  npm:@foo/bar\n    alpha, beta";
+		const result = parseSectionText(text);
+		expect(result!.items).toEqual(["npm:bar", "npm:alpha", "npm:beta"]);
+	});
 });
 
 // ── parseModelScope ──────────────────────────────────────────────────────────
