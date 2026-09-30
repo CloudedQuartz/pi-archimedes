@@ -9,7 +9,7 @@
   "keywords": [
     "pi-package"
   ],
-  "description": "Parallel agents, shared task lists, MCP tools, and a polished terminal for the Pi coding agent.",
+  "description": "Parallel agents, shared task lists, and a polished terminal for the Pi coding agent.",
   "files": [
     "src",
     "README.md"
@@ -25,7 +25,6 @@
     "@pi-archimedes/todo": "workspace:*",
     "@pi-archimedes/notify": "workspace:*",
     "@pi-archimedes/session-name": "workspace:*",
-    "@pi-archimedes/mcp": "workspace:*",
     "@pi-archimedes/sudo": "workspace:*",
     "@pi-archimedes/ui": "workspace:*",
     "@pi-archimedes/web": "workspace:*"

@@ -29,9 +29,9 @@ After installing Pi, choose one installation command above, then `cd` into your 
 ## Triggers
 
 - **Settled runs** — on Pi's `agent_settled` event: the run has fully settled (no automatic retry, compaction, or queued continuation still to fire), not merely "a turn ended".
-- **Blocking prompts** — on `ui_prompt_start`: any extension prompt is waiting on you (a tabbed ask, a sudo password prompt, an MCP OAuth loader) — direct **or** subagent-relayed, since the event fires in the parent process.
+- **Blocking prompts** — on `ui_prompt_start`: any extension prompt is waiting on you (a tabbed ask, a sudo password or command-confirm prompt) — direct **or** subagent-relayed, since the event fires in the parent process.
 
-The alert fires after a fixed `delayMs` (30 s by default) from the trigger. It is a delay, not an idle timer: nothing measures how long you've been reading. Any input in the terminal cancels pending alerts immediately, a new agent run cancels them, and a prompt that closes without you typing (say, the OAuth loader finishing from the browser) cancels its own timer — so a long-gone question can't ring.
+The alert fires after a fixed `delayMs` (30 s by default) from the trigger. It is a delay, not an idle timer: nothing measures how long you've been reading. Any input in the terminal cancels pending alerts immediately, a new agent run cancels them, and a prompt that closes without you typing (say, a confirm dialog that times out and auto-declines) cancels its own timer — so a long-gone question can't ring.
 
 ## Terminal delivery
 

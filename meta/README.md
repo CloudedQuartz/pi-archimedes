@@ -3,7 +3,7 @@
 
 An extra pair of eyes on your code. Agents working in parallel. A terminal that keeps you in the loop—and looks good doing it.
 
-**Archimedes brings subagents, shared task lists, MCP tools, and a polished interface to [Pi](https://github.com/earendil-works/pi). Install them together, use what you like, and make the setup yours.**
+**Archimedes brings subagents, shared task lists, and a polished interface to [Pi](https://github.com/earendil-works/pi). Install them together, use what you like, and make the setup yours.**
 
 [![npm version](https://img.shields.io/npm/v/pi-archimedes?style=flat-square)](https://www.npmjs.com/package/pi-archimedes)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D22.19.0-brightgreen?style=flat-square)](https://nodejs.org)
@@ -23,7 +23,7 @@ One command:
 pi install npm:pi-archimedes
 ```
 
-Your `~/.pi/agent/` stays as it is — Archimedes only adds its namespaces under `settings.json`. Pi's own `auth.json`, `keybindings.json`, agents, and sessions are untouched (and `/mcp setup` only writes the project's `.mcp.json`, when you run it).
+Your `~/.pi/agent/` stays as it is — Archimedes only adds its namespaces under `settings.json`. Pi's own `auth.json`, `keybindings.json`, agents, and sessions are untouched.
 
 Then run `/reload` in your session (or start a new one) to pick it up — that reloads the extensions *and* your keybindings, so any shortcuts you've customized in `~/.pi/agent/keybindings.json` keep working.
 
@@ -104,14 +104,6 @@ You don't have to copy messages between terminals to stay involved.
 
 ---
 
-## Bring the tools you already use.
-
-[Connect MCP servers](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/mcp/README.md), browse their tools, and handle authentication inside Pi. Import server definitions from Cursor, Claude Code, Claude Desktop, or VS Code rather than rebuilding your setup.
-
-Start with `/mcp setup`. Manage it with `/mcp`.
-
----
-
 ## See what changed. Not just that something changed.
 
 [Syntax-highlighted diffs](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/diff/README.md), side by side when there's room and unified when there isn't. Word-level highlights draw your eye to the changes inside each line.
@@ -150,7 +142,7 @@ You can leave the terminal to do its thing.
 
 One install brings everything together. Switch optional extensions on or off with `/plugins`, then `/reload` to apply. Use `/archimedes` to adjust the available settings.
 
-Only want the diffs, footer, or MCP tools? Each component is available separately — see [Components](#components).
+Only want the diffs or footer? Each component is available separately — see [Components](#components).
 
 ---
 
@@ -158,11 +150,10 @@ Only want the diffs, footer, or MCP tools? Each component is available separatel
 
 | Command | Scope | Notes |
 |---------|-------|-------|
-| `/plugins` | Suite | Toggle the ten optional extensions (core is always on and not toggleable). Toggles persist immediately; `/reload` (or a fresh session) applies them. |
+| `/plugins` | Suite | Toggle the eleven optional extensions (core is always on and not toggleable). Toggles persist immediately; `/reload` (or a fresh session) applies them. |
 | `/archimedes` | Suite | Interactive settings panel — up/down moves, left/right changes values, Enter edits supported fields, `s` saves, Esc discards the current edits. Settings captured at startup need `/reload`. Not every setting has a panel control. |
 | `/agents` | Suite, subagent enabled | Browse, create, and edit custom subagent definitions in `.pi/agents/*.md`. |
 | `/todos` | Todo component | Refreshes the todo widget and reports its status. `/todos clear` clears the list. (The board's visibility is not a `/todos` toggle — see the [todo docs](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/todo/README.md).) |
-| `/mcp`, `/mcp setup` | MCP component | Manage servers and run logins; the setup wizard scaffolds `.mcp.json` or imports configs from Cursor, Claude Code, Claude Desktop, or VS Code. |
 | `/sudo`, `/sudo forget` | Sudo component | Inspect cached credential state; `forget` clears it. |
 | `/reload` | Pi | Applies plugin changes and settings read at startup. |
 
@@ -170,7 +161,7 @@ Only want the diffs, footer, or MCP tools? Each component is available separatel
 
 ## Settings
 
-Every component keeps its own namespace under `~/.pi/agent/settings.json`, which Pi parses as **strict JSON** (no comments — unlike MCP server configs, which accept JSONC). Each component's README documents its namespace, fields, and defaults — including [core](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/core/README.md) (chrome, spinner, thinking), [footer](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/footer/README.md), [diff](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/diff/README.md), [notify](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/notify/README.md), [mcp](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/mcp/README.md), [image-paste](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/image-paste/README.md), and [sudo](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/sudo/README.md) (also strict JSON). The `/archimedes` panel covers the settings that have a control; not everything does.
+Every component keeps its own namespace under `~/.pi/agent/settings.json`, which Pi parses as **strict JSON**. Each component's README documents its namespace, fields, and defaults — including [core](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/core/README.md) (chrome, spinner, thinking), [footer](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/footer/README.md), [diff](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/diff/README.md), [notify](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/notify/README.md), [image-paste](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/image-paste/README.md), and [sudo](https://github.com/danielcherubini/pi-archimedes/blob/main/packages/sudo/README.md) (also strict JSON). The `/archimedes` panel covers the settings that have a control; not everything does.
 
 ---
 
@@ -182,7 +173,6 @@ Every component keeps its own namespace under `~/.pi/agent/settings.json`, which
 | **Subagent** | [`@pi-archimedes/subagent`](https://www.npmjs.com/package/@pi-archimedes/subagent) | Live subagent dispatch, custom agent definitions; `/agents` editor with the suite |
 | **Todo** | [`@pi-archimedes/todo`](https://www.npmjs.com/package/@pi-archimedes/todo) | Multi-column todo board with subagent columns and auto-clear |
 | **Ask** | [`@pi-archimedes/ask`](https://www.npmjs.com/package/@pi-archimedes/ask) | Structured questions — including subagent questions relayed into your terminal |
-| **MCP** | [`@pi-archimedes/mcp`](https://www.npmjs.com/package/@pi-archimedes/mcp) | `/mcp` management, setup wizard, OAuth, config imports |
 | **Sudo** | [`@pi-archimedes/sudo`](https://www.npmjs.com/package/@pi-archimedes/sudo) | `sudo_exec` with masked password prompt and interactive-sudo guard |
 | **Diff** | [`@pi-archimedes/diff`](https://www.npmjs.com/package/@pi-archimedes/diff) | Syntax-highlighted side-by-side and unified diffs with word-level highlights |
 | **Footer** | [`@pi-archimedes/footer`](https://www.npmjs.com/package/@pi-archimedes/footer) | Branch, model, context usage, and token/cost status bar |
@@ -199,7 +189,6 @@ pi install npm:@pi-archimedes/core
 pi install npm:@pi-archimedes/subagent
 pi install npm:@pi-archimedes/todo
 pi install npm:@pi-archimedes/ask
-pi install npm:@pi-archimedes/mcp
 pi install npm:@pi-archimedes/sudo
 pi install npm:@pi-archimedes/diff
 pi install npm:@pi-archimedes/footer

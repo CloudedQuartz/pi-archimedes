@@ -10,10 +10,10 @@
 import { isConfigEnabled, setConfigEnabled, loadConfig, removeConfig } from "@pi-archimedes/core/settings-io";
 
 export interface PluginDef {
-  id: string;              // matches package npm name suffix, e.g. "mcp"
-  label: string;           // human label, e.g. "MCP"
+  id: string;              // matches package npm name suffix, e.g. "web"
+  label: string;           // human label, e.g. "Web"
   description: string;     // one-liner shown in the menu
-  namespace: string;       // "archimedes.mcp" — the settings.json key holding this plugin's { enabled, ...settings }
+  namespace: string;       // "archimedes.web" — the settings.json key holding this plugin's { enabled, ...settings }
   load: () => Promise<unknown>; // lazy import for instance probing + future lazy mount
 }
 
@@ -28,7 +28,6 @@ export const PLUGINS: PluginDef[] = [
   { id: "diff",         label: "Diff rendering",     description: "Shiki-powered diff display",                      namespace: "archimedes.diff",        load: () => import("@pi-archimedes/diff") },
   { id: "image-paste",  label: "Image paste",        description: "Clipboard image paste",                           namespace: "archimedes.imagePaste",  load: () => import("@pi-archimedes/image-paste") },
   { id: "subagent",     label: "Subagents",          description: "Live subagent dispatch (general, reviewer, …)",  namespace: "archimedes.subagent",    load: () => import("@pi-archimedes/subagent") },
-  { id: "mcp",          label: "MCP",                description: "MCP client adapter + /mcp commands",             namespace: "archimedes.mcp",         load: () => import("@pi-archimedes/mcp") },
   { id: "web",          label: "Web",                description: "Web search and content fetching with multi-provider routing", namespace: "archimedes.web",         load: () => import("@pi-archimedes/web") },
   { id: "sudo",         label: "Sudo",                 description: "Safe privileged execution",                      namespace: "archimedes.sudo",      load: () => import("@pi-archimedes/sudo") },
 ];

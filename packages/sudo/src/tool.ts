@@ -388,7 +388,7 @@ export function createSudoExecTool(options: {
 
 		// NOTE: no return-type annotation on execute — pi reads `isError` at
 		// runtime though AgentToolResult omits it; the inferred union escapes
-		// fresh-literal excess-property checking (same convention as todo/mcp).
+		// fresh-literal excess-property checking (same convention as todo).
 		async execute(
 			_toolCallId: string,
 			params: SudoExecInput,

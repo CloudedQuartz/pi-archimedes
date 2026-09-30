@@ -100,14 +100,14 @@ describe("isPluginEnabled (per-namespace gate)", () => {
   });
 
   it("defaults to enabled when config is empty", () => {
-    expect(isPluginEnabled("mcp")).toBe(true);
+    expect(isPluginEnabled("web")).toBe(true);
     expect(isPluginEnabled("footer")).toBe(true);
     expect(isPluginEnabled("diff")).toBe(true);
   });
 
   it("returns false only for the plugin disabled in its own namespace", () => {
-    mockStore["archimedes.mcp"] = { enabled: false };
-    expect(isPluginEnabled("mcp")).toBe(false);
+    mockStore["archimedes.web"] = { enabled: false };
+    expect(isPluginEnabled("web")).toBe(false);
     expect(isPluginEnabled("footer")).toBe(true);
     expect(isPluginEnabled("todo")).toBe(true);
   });
@@ -206,12 +206,11 @@ describe("PLUGINS manifest integrity", () => {
     "diff",
     "image-paste",
     "subagent",
-    "mcp",
     "web",
     "sudo",
   ];
 
-  it("lists exactly the 12 non-core packages (no drift)", () => {
+  it("lists exactly the 11 non-core packages (no drift)", () => {
     expect([...PLUGINS.map((p) => p.id)].sort()).toEqual([...EXPECTED_IDS].sort());
   });
 

@@ -116,8 +116,8 @@ export default function (pi: ExtensionAPI): void {
     // Update module-level context ref so lazy-loaded callbacks always see current session
     currentCtx = ctx;
 
-    // ── Parallel lazy-load all five packages (saves ~100ms vs sequential) ──
-    const [diffMod, ipMod, saMod, mcpMod, webMod] = await Promise.all([
+    // ── Parallel lazy-load all four packages (saves ~100ms vs sequential) ──
+    const [diffMod, ipMod, saMod, webMod] = await Promise.all([
       isPluginEnabled("diff")
         ? import("@pi-archimedes/diff").catch((e) => { console.error("[archimedes] diff load failed:", e); return null; })
         : Promise.resolve(null),
@@ -127,9 +127,6 @@ export default function (pi: ExtensionAPI): void {
       isPluginEnabled("subagent")
         ? import("@pi-archimedes/subagent").catch((e) => { console.error("[archimedes] subagent load failed:", e); return null; })
         : Promise.resolve(null),
-      isPluginEnabled("mcp")
-        ? import("@pi-archimedes/mcp").catch((e) => { console.error("[archimedes] mcp load failed:", e); return null; })
-        : Promise.resolve(null),
       isPluginEnabled("web")
         ? import("@pi-archimedes/web").catch((e) => {
             console.error("[archimedes] web load failed:", e);
@@ -137,7 +134,7 @@ export default function (pi: ExtensionAPI): void {
           })
         : Promise.resolve(null),
     ]);
-    archTime("5 packages loaded in parallel");
+    archTime("4 packages loaded in parallel");
 
     // Each session_start fires on a fresh Extension (pi creates a new
     // ExtensionRunner per session). Registration is safe to — and must —
@@ -161,9 +158,6 @@ export default function (pi: ExtensionAPI): void {
     if (saMod) {
       saMod.registerSubagent(pi);
       saMod.registerAgentsCommand(pi);
-    }
-    if (mcpMod) {
-      mcpMod.registerMcp(pi);
     }
     if (webMod) {
       webMod.registerWeb(pi);

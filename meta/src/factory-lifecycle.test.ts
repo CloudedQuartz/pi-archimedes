@@ -66,8 +66,8 @@ vi.mock("@pi-archimedes/session-name", () => ({ registerSessionName: vi.fn() }))
 vi.mock("@pi-archimedes/sudo", () => ({ registerSudo: vi.fn() }));
 
 // Dynamic imports done in the session_start handler — mock EXACTLY the
-// properties index.ts uses via destructured `ipMod.*` / `diffMod` / `saMod` /
-// `mcpMod` access (import result objects, not named destructure).
+// properties index.ts uses via destructured `ipMod.*` / `diffMod` / `saMod`
+// access (import result objects, not named destructure).
 vi.mock("@pi-archimedes/diff", () => ({
   registerDiffTools: vi.fn(),
 }));
@@ -82,9 +82,6 @@ vi.mock("@pi-archimedes/image-paste/keybinding-offer", () => ({
 vi.mock("@pi-archimedes/subagent", () => ({
   registerSubagent: vi.fn(),
   registerAgentsCommand: vi.fn(),
-}));
-vi.mock("@pi-archimedes/mcp", () => ({
-  registerMcp: vi.fn(),
 }));
 
 // Meta-local modules the factory imports — not under test here

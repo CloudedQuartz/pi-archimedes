@@ -13,7 +13,6 @@ export default defineConfig({
       "packages/sudo",
       "packages/session-name",
       "packages/image-paste",
-      "packages/mcp",
       "packages/ui",
       "packages/web",
       "meta",

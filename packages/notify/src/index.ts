@@ -185,16 +185,16 @@ function fireNotification(trigger: TriggerType | null): void {
 /** Register the notify extension with the Pi agent. */
 export function registerNotify(pi: ExtensionAPI): void {
   pi.on("agent_settled", () => scheduleNotify(TRIGGER.AGENT_SETTLED));
-  // Any blocking extension UI prompt (ask, sudo, mcp OAuth) — fires in the
+  // Any blocking extension UI prompt (ask, sudo) — fires in the
   // parent process for direct and subagent-relayed prompts alike.
   pi.on("ui_prompt_start", (_event) => scheduleNotify(TRIGGER.UI_PROMPT));
   pi.on("input", () => cancelPending());
   pi.on("before_agent_start", () => cancelPending());
   pi.on("agent_start", () => cancelPending());
-  // A prompt that closes without terminal input (e.g. the mcp OAuth
-  // loader finishing from the browser's `done()`) cancels the question
-  // timer so a long-gone prompt does not fire a stale "question needs
-  // your answer". Scoped so it never wipes a pending "task complete" timer.
+  // A prompt that closes without terminal input (e.g. a ctx.ui.confirm
+  // that times out and auto-declines) cancels the question timer so a
+  // long-gone prompt does not fire a stale "question needs your answer".
+  // Scoped so it never wipes a pending "task complete" timer.
   pi.on("ui_prompt_end", () => {
     if (pendingTrigger === TRIGGER.UI_PROMPT) {
       cancelPending();

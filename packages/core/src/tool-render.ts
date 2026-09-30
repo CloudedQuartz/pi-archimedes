@@ -1,7 +1,7 @@
 /**
  * Shared tool-row rendering helpers.
  *
- * Archimedes tools (mcp, todo, …) render a consistent two-part row:
+ * Archimedes tools (todo, …) render a consistent two-part row:
  *
  *   line 1 (header):  <toolName> (blue bold) + <action> (orange accent)
  *   result line:      <glyph> <label>  — glyph reflects run status:
