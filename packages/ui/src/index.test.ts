@@ -36,6 +36,10 @@ vi.mock("./thinking/patch.js", () => ({
   patchThinkingRenderer: vi.fn(),
 }));
 
+vi.mock("./tools/patch.js", () => ({
+  patchToolRenderer: vi.fn(),
+}));
+
 vi.mock("./thinking/transform.js", () => ({
   transformThinkingContent: vi.fn(),
 }));
@@ -51,6 +55,7 @@ vi.mock("./startup/index.js", async (importOriginal) => {
 
 vi.mock("./migration.js", () => ({
   migrateCoreToUIConfig: vi.fn(),
+  migrateCompactThinkingToStyle: vi.fn(),
   UI_CONFIG_KEYS: [],
 }));
 
@@ -72,6 +77,7 @@ import { patchConsoleLog } from "./startup/capture.js";
 import { migrateCoreToUIConfig } from "./migration.js";
 import { registerBashToolOverride } from "./bash/index.js";
 import { patchThinkingRenderer } from "./thinking/patch.js";
+import { patchToolRenderer } from "./tools/patch.js";
 import { transformThinkingContent } from "./thinking/transform.js";
 import { renderHeader, patchStartupListing } from "./startup/index.js";
 
@@ -211,9 +217,12 @@ describe("packages/ui lifecycle and registration", () => {
           labelText: "Thinking...",
           labelColor: "255,215,0",
           autoCollapseThinking: false,
-          compactThinking: "Off",
+          thinkingStyle: "Full",
         }),
       );
+
+      // Tool renderer (default toolStyle is Compact)
+      expect(patchToolRenderer).toHaveBeenCalledWith({ toolStyle: "Compact" });
     });
 
     it("respects editorSpinBorder: false by leaving workingVisible=true and not installing editor component", () => {
@@ -292,6 +301,7 @@ describe("packages/ui lifecycle and registration", () => {
       expect(ui.setHeader).not.toHaveBeenCalled();
       expect(ui.setEditorComponent).not.toHaveBeenCalled();
       expect(patchThinkingRenderer).not.toHaveBeenCalled();
+      expect(patchToolRenderer).not.toHaveBeenCalled();
     });
   });
 
