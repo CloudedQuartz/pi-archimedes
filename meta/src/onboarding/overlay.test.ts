@@ -229,7 +229,7 @@ describe("createOnboardingOverlay", () => {
       toolDefault: "Minimal",
     });
     comp.handleInput(ENTER); // step 0: confirm Full thinking
-    comp.handleInput(DOWN); // step 1: move the tool cursor Minimal → Native
+    comp.handleInput(UP); // step 1: move the tool cursor Minimal → Native (Native is the first option, Minimal the second)
     comp.handleInput(ENTER); // step 1 → 2 (confirm Native tool)
     comp.handleInput(ENTER); // step 2 → 3
     comp.handleInput(ENTER); // step 3 → finalize

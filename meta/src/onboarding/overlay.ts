@@ -43,14 +43,17 @@ export interface OnboardingOverlayOptions {
 // The single "style" question was split into two INDEPENDENT ones (thinking +
 // tool) so the user can mix, e.g. "Full thinking" + "Minimal tools". The tool
 // question is the styling master switch: Minimal = archimedes-styled tools,
-// Native = no archimedes tool styling at all.
+// Native = no archimedes tool styling at all. Both steps list the standard
+// option first and the compact option second (matching the /archimedes
+// panel's value order: thinkingStyle [Full, Compact], toolStyle
+// [Native, Minimal]).
 const THINKING_OPTIONS: { label: ThinkingStyle; description: string }[] = [
   { label: "Full", description: "Show all of the model's reasoning" },
   { label: "Compact", description: "One line of reasoning (click to expand)" },
 ];
 const TOOL_OPTIONS: { label: ToolStyle; description: string }[] = [
-  { label: "Minimal", description: "Archimedes-styled tools (minimal view)" },
   { label: "Native", description: "Pi's native tool rendering (no styling)" },
+  { label: "Minimal", description: "Archimedes-styled tools (minimal view)" },
 ];
 
 /**
