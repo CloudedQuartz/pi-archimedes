@@ -13,8 +13,23 @@ export const ANIMATION_STYLES = [
 ] as const;
 export type AnimationStyle = (typeof ANIMATION_STYLES)[number];
 
-export type OutputStyle = "Full" | "Compact";
-export const OUTPUT_STYLE_VALUES: readonly OutputStyle[] = ["Full", "Compact"] as const;
+export type ThinkingStyle = "Full" | "Compact";
+export const THINKING_STYLE_VALUES: readonly ThinkingStyle[] = [
+  "Full",
+  "Compact",
+] as const;
+
+/**
+ * How tool rendering is handled. `Minimal` = the archimedes-styled tools
+ * (bash/codemode overrides, minimal collapsed view); `Native` = no archimedes
+ * styling at all — the overrides are not registered, so pi's native tool
+ * rendering stands (and no built-in-takeover startup notice).
+ */
+export type ToolStyle = "Native" | "Minimal";
+export const TOOL_STYLE_VALUES: readonly ToolStyle[] = [
+  "Native",
+  "Minimal",
+] as const;
 
 export const SPINNER_STYLES: readonly SpinnerStyle[] = [
   "typing",
@@ -29,11 +44,24 @@ export const SPINNER_STYLES: readonly SpinnerStyle[] = [
   "marquee",
 ];
 
-export function normalizeOutputStyle(value: unknown): OutputStyle {
+export function normalizeThinkingStyle(value: unknown): ThinkingStyle {
   if (value === "Full" || value === "Compact") return value;
   if (value === "Off") return "Full";
   if (value === "1 line" || value === "3 lines" || value === "5 lines") return "Compact";
   return "Full";
+}
+
+/**
+ * Legacy mappings: `Full` (auto-expand, dropped) → `Minimal` (the user opted
+ * into archimedes styling, which is preserved); `Compact` (styled tools,
+ * native-collapsed presentation) → `Minimal` (styled tools — the upgrade
+ * must not silently strip styling from existing users).
+ */
+export function normalizeToolStyle(value: unknown): ToolStyle {
+  if (value === "Native" || value === "Minimal") return value;
+  if (value === "Full") return "Minimal";
+  if (value === "Compact") return "Minimal";
+  return "Minimal";
 }
 
 export type SpinnerStyle =
@@ -50,10 +78,11 @@ export type SpinnerStyle =
 
 export interface UIConfig {
   bashToolStyling: boolean;
+  codemodeToolStyling: boolean;
   mutedTheme: boolean;
   autoCollapseThinking: boolean;
-  thinkingStyle: OutputStyle;
-  toolStyle: OutputStyle;
+  thinkingStyle: ThinkingStyle;
+  toolStyle: ToolStyle;
   codeUnindent: boolean;
   labelText: string;
   labelColor: string;
@@ -68,10 +97,11 @@ export type CoreConfig = UIConfig;
 
 export const DEFAULT_UI_CONFIG: UIConfig = {
   bashToolStyling: true,
+  codemodeToolStyling: true,
   mutedTheme: false,
   autoCollapseThinking: false,
   thinkingStyle: "Full",
-  toolStyle: "Compact",
+  toolStyle: "Minimal",
   codeUnindent: true,
   labelText: "Thinking...",
   labelColor: "255,215,0",

@@ -36,10 +36,6 @@ vi.mock("./thinking/patch.js", () => ({
   patchThinkingRenderer: vi.fn(),
 }));
 
-vi.mock("./tools/patch.js", () => ({
-  patchToolRenderer: vi.fn(),
-}));
-
 vi.mock("./thinking/transform.js", () => ({
   transformThinkingContent: vi.fn(),
 }));
@@ -56,12 +52,18 @@ vi.mock("./startup/index.js", async (importOriginal) => {
 vi.mock("./migration.js", () => ({
   migrateCoreToUIConfig: vi.fn(),
   migrateCompactThinkingToStyle: vi.fn(),
+  migrateRemovedToolPatch: vi.fn(),
   UI_CONFIG_KEYS: [],
 }));
 
 vi.mock("./bash/index.js", () => ({
   registerBashToolOverride: vi.fn(),
   clearActiveBashIntervals: vi.fn(),
+}));
+
+vi.mock("./codemode/index.js", () => ({
+  registerCodemodeToolOverride: vi.fn(async () => true),
+  clearActiveCodemodeIntervals: vi.fn(),
 }));
 
 import defaultExport, {
@@ -75,9 +77,9 @@ import defaultExport, {
 } from "./index.js";
 import { patchConsoleLog } from "./startup/capture.js";
 import { migrateCoreToUIConfig } from "./migration.js";
-import { registerBashToolOverride } from "./bash/index.js";
+import { registerBashToolOverride, clearActiveBashIntervals } from "./bash/index.js";
+import { registerCodemodeToolOverride, clearActiveCodemodeIntervals } from "./codemode/index.js";
 import { patchThinkingRenderer } from "./thinking/patch.js";
-import { patchToolRenderer } from "./tools/patch.js";
 import { transformThinkingContent } from "./thinking/transform.js";
 import { renderHeader, patchStartupListing } from "./startup/index.js";
 
@@ -182,7 +184,7 @@ describe("packages/ui lifecycle and registration", () => {
   });
 
   describe("session_start with interactive UI (hasUI: true)", () => {
-    it("configures bash tool override, header, editor, and thinking renderer", () => {
+    it("configures bash tool override, codemode tool override, header, editor, and thinking renderer", () => {
       const { triggerStart } = setupHarness();
       const { ctx, ui } = makeCtx(true);
 
@@ -190,6 +192,9 @@ describe("packages/ui lifecycle and registration", () => {
 
       // Bash tool override
       expect(registerBashToolOverride).toHaveBeenCalledWith(expect.anything(), "/workspace/test-project");
+
+      // Codemode tool override (fire-and-forget)
+      expect(registerCodemodeToolOverride).toHaveBeenCalledWith(expect.anything());
 
       // Header installation
       expect(ui.setHeader).toHaveBeenCalledTimes(1);
@@ -221,8 +226,28 @@ describe("packages/ui lifecycle and registration", () => {
         }),
       );
 
-      // Tool renderer (default toolStyle is Compact)
-      expect(patchToolRenderer).toHaveBeenCalledWith({ toolStyle: "Compact" });
+      // Master gate (default toolStyle is Minimal): both overrides registered
+      expect(registerBashToolOverride).toHaveBeenCalled();
+      expect(registerCodemodeToolOverride).toHaveBeenCalled();
+    });
+
+    it("skips the tool overrides entirely when toolStyle is Native", () => {
+      vi.mocked(loadUIConfig).mockReturnValue({
+        ...DEFAULT_UI_CONFIG,
+        toolStyle: "Native",
+      });
+
+      const { triggerStart } = setupHarness();
+      const { ctx, ui } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      // Native = no archimedes tool styling: neither override is registered
+      // (pi's native rendering stands, no built-in-takeover notice).
+      expect(registerBashToolOverride).not.toHaveBeenCalled();
+      expect(registerCodemodeToolOverride).not.toHaveBeenCalled();
+      // The rest of the UI still comes up.
+      expect(ui.setHeader).toHaveBeenCalledTimes(1);
     });
 
     it("respects editorSpinBorder: false by leaving workingVisible=true and not installing editor component", () => {
@@ -252,6 +277,20 @@ describe("packages/ui lifecycle and registration", () => {
       triggerStart(ctx);
 
       expect(registerBashToolOverride).not.toHaveBeenCalled();
+    });
+
+    it("skips the codemode tool override when codemodeToolStyling is false", () => {
+      vi.mocked(loadUIConfig).mockReturnValue({
+        ...DEFAULT_UI_CONFIG,
+        codemodeToolStyling: false,
+      });
+
+      const { triggerStart } = setupHarness();
+      const { ctx } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      expect(registerCodemodeToolOverride).not.toHaveBeenCalled();
     });
 
     it("does not accumulate message_end listeners on repeated session_start (simulating /reload)", () => {
@@ -301,7 +340,6 @@ describe("packages/ui lifecycle and registration", () => {
       expect(ui.setHeader).not.toHaveBeenCalled();
       expect(ui.setEditorComponent).not.toHaveBeenCalled();
       expect(patchThinkingRenderer).not.toHaveBeenCalled();
-      expect(patchToolRenderer).not.toHaveBeenCalled();
     });
   });
 
@@ -319,6 +357,8 @@ describe("packages/ui lifecycle and registration", () => {
       triggerShutdown(ctx);
 
       expect(unpatchConsoleLog).toHaveBeenCalledTimes(1);
+      expect(clearActiveBashIntervals).toHaveBeenCalledTimes(1);
+      expect(clearActiveCodemodeIntervals).toHaveBeenCalledTimes(1);
       expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
       expect(ui.setEditorComponent).toHaveBeenLastCalledWith(undefined);
     });
