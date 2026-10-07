@@ -92,6 +92,14 @@ jobs:
         # whether the release actually shipped. Guards against a half-published
         # version, which leaves `pi install @pi-archimedes/<pkg>` resolving to
         # mismatched suite versions.
+        #
+        # A package can be published and still 404 here: the registry serves
+        # reads from replicas that lag the write, and on the v2.9.2 run three
+        # packages published minutes earlier still 404'd past a 75s per-package
+        # budget, failing the release for work that had actually landed. So:
+        # probe everything in parallel, then poll only what is still missing
+        # against one shared deadline. The happy path is still a single
+        # parallel round-trip.
         run: |
           node --input-type=module -e '
           import { readFileSync } from "node:fs"
@@ -101,23 +109,37 @@ jobs:
           ].map((p) => `packages/${p}`)
           dirs.push("meta")
 
-          const missing = []
-          for (const dir of dirs) {
+          const pkgs = dirs.map((dir) => {
             const { name, version } = JSON.parse(readFileSync(`${dir}/package.json`, "utf8"))
-            let found = false
-            for (let attempt = 1; attempt <= 5 && !found; attempt++) {
-              const url = `https://registry.npmjs.org/${encodeURIComponent(name)}/${version}`
-              const res = await fetch(url).catch(() => null)
-              found = res?.ok === true
-              if (!found) await new Promise((r) => setTimeout(r, attempt * 5000))
+            return { name, version }
+          })
+          const live = (p) =>
+            fetch(`https://registry.npmjs.org/${encodeURIComponent(p.name)}/${p.version}`)
+              .then((res) => res.ok)
+              .catch(() => false)
+
+          const DEADLINE_MS = 5 * 60_000
+          const POLL_MS = 10_000
+          let pending = [...pkgs]
+          const deadline = Date.now() + DEADLINE_MS
+
+          for (let round = 1; pending.length && Date.now() < deadline; round++) {
+            const results = await Promise.all(pending.map(live))
+            pending = pending.filter((_, i) => !results[i])
+            if (pending.length && Date.now() < deadline) {
+              console.log(`Round ${round}: ${pending.length} not visible yet, retrying in ${POLL_MS / 1000}s (replicas lag writes)`)
+              await new Promise((r) => setTimeout(r, POLL_MS))
             }
-            console.log(`${found ? "✅" : "❌"} ${name}@${version}`)
-            if (!found) missing.push(`${name}@${version}`)
+          }
+
+          const missing = pending.map((p) => `${p.name}@${p.version}`)
+          for (const p of pkgs) {
+            console.log(`${missing.includes(`${p.name}@${p.version}`) ? "❌" : "✅"} ${p.name}@${p.version}`)
           }
 
           if (missing.length > 0) {
             console.error(`\n::error::Not published to npm: ${missing.join(", ")}`)
             process.exit(1)
           }
-          console.log(`\nAll ${dirs.length} packages are live on npm.`)
+          console.log(`\nAll ${pkgs.length} packages are live on npm.`)
           '
