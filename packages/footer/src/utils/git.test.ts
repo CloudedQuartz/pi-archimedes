@@ -71,6 +71,12 @@ describe("getGitStatus", () => {
     expect(result.unstaged).toBe(0);
   });
 
+  it("counts intent-to-add files (jj's new files) as unstaged", async () => {
+    const mockExecSync = vi.fn(() => "1 .A N... 000000 000000 100644 0000 0000 new.txt\n");
+    await loadModule(mockExecSync);
+    expect(getGitStatus()).toMatchObject({ staged: 0, unstaged: 1, untracked: 0 });
+  });
+
   it("parse untracked lines", async () => {
     const mockExecSync = vi.fn(() => "?  untracked1.txt\n?  untracked2.txt\n");
     await loadModule(mockExecSync);
@@ -78,12 +84,13 @@ describe("getGitStatus", () => {
     expect(result.untracked).toBe(2);
   });
 
-  it("parse branch summary (ahead/behind)", async () => {
-    const mockExecSync = vi.fn(() => "## main...origin/main 3 2\n");
+  it("parse branch headers (ahead/behind)", async () => {
+    const mockExecSync = vi.fn((_cmd: string) =>
+      "# branch.oid abc123\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +3 -2\n");
     await loadModule(mockExecSync);
     const result = getGitStatus();
-    expect(result.ahead).toBe(3);
-    expect(result.behind).toBe(2);
+    expect(mockExecSync.mock.calls[0]![0]).toContain("--branch"); // headers only print with --branch
+    expect(result).toEqual({ staged: 0, unstaged: 0, untracked: 0, ahead: 3, behind: 2 });
   });
 
   it("malformed lines ignored gracefully", async () => {
