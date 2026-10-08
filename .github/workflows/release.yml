@@ -94,9 +94,10 @@ jobs:
         # mismatched suite versions.
         #
         # A package can be published and still 404 here: the registry serves
-        # reads from replicas that lag the write, and on the v2.9.2 run three
+        # reads from replicas that lag the write. On the v2.9.2 run three
         # packages published minutes earlier still 404'd past a 75s per-package
-        # budget, failing the release for work that had actually landed. So:
+        # budget, and on v2.10.1 @pi-archimedes/ui was invisible for ~7 minutes
+        # after a successful publish, exhausting a 5-minute shared deadline. So:
         # probe everything in parallel, then poll only what is still missing
         # against one shared deadline. The happy path is still a single
         # parallel round-trip.
@@ -118,7 +119,7 @@ jobs:
               .then((res) => res.ok)
               .catch(() => false)
 
-          const DEADLINE_MS = 5 * 60_000
+          const DEADLINE_MS = 10 * 60_000
           const POLL_MS = 10_000
           let pending = [...pkgs]
           const deadline = Date.now() + DEADLINE_MS
