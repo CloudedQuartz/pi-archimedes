@@ -353,3 +353,118 @@ describe("updateConfig", () => {
     expect(data["concurrent.ns"]).toBeDefined(); // siblings survived
   });
 });
+
+describe("symlink preservation", () => {
+  const settingsLink = () => join(tempDir, "settings.json");
+  const target = () => join(tempDir, "dotfiles-settings.json");
+
+  /**
+   * Per-case setup: wipe settings.json (and any stale link/target/tmp), then
+   * create a fresh target file pre-seeded with `{ preexisting: "keep-me" }`
+   * (plus optional extra keys) and a settings.json **symlink** to it.
+   * For dangling cases, `targetName` points the link at a non-existent path
+   * instead of the seeded target.
+   */
+  function setupSymlink(targetName?: string, extraTargetKeys?: Record<string, unknown>) {
+    const link = settingsLink();
+    const t = target();
+    for (const p of [link, link + ".tmp", t, join(tempDir, "nope.json"), join(tempDir, "nope2.json")]) {
+      try { fs.unlinkSync(p); } catch { /* ignore */ }
+    }
+    if (targetName) {
+      fs.symlinkSync(join(tempDir, targetName), link);
+      return join(tempDir, targetName);
+    }
+    fs.writeFileSync(t, JSON.stringify({ preexisting: "keep-me", ...extraTargetKeys }), "utf-8");
+    fs.symlinkSync(t, link);
+    return t;
+  }
+
+  afterEach(() => {
+    for (const p of [settingsLink(), settingsLink() + ".tmp", target(), join(tempDir, "nope.json"), join(tempDir, "nope2.json")]) {
+      try { fs.unlinkSync(p); } catch { /* ignore */ }
+    }
+  });
+
+  it("saveConfig through symlink preserves the link and updates the destination", () => {
+    const t = setupSymlink();
+    saveConfig("archimedes.test", { a: 1 });
+    expect(fs.lstatSync(settingsLink()).isSymbolicLink()).toBe(true);
+    const data = JSON.parse(fs.readFileSync(t, "utf-8"));
+    expect(data["archimedes.test"]).toEqual({ a: 1 });
+    expect(data["preexisting"]).toBe("keep-me");
+  });
+
+  it("removeConfig through symlink preserves the link", () => {
+    const t = setupSymlink();
+    saveConfig("archimedes.test", { a: 1 });
+    removeConfig("archimedes.test");
+    expect(fs.lstatSync(settingsLink()).isSymbolicLink()).toBe(true);
+    const data = JSON.parse(fs.readFileSync(t, "utf-8"));
+    expect(data["archimedes.test"]).toBeUndefined();
+    expect(data["preexisting"]).toBe("keep-me");
+  });
+
+  it("regular file behavior unchanged (no symlink)", () => {
+    const link = settingsLink();
+    setupSymlink();
+    fs.unlinkSync(link);
+    fs.writeFileSync(link, "{}", "utf-8");
+    saveConfig("archimedes.test", { b: 2 });
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(false);
+    const data = JSON.parse(fs.readFileSync(link, "utf-8"));
+    expect(data["archimedes.test"]).toEqual({ b: 2 });
+    expect(fs.existsSync(link + ".tmp")).toBe(false);
+  });
+
+  it("removeConfig with missing file creates nothing", () => {
+    const link = settingsLink();
+    setupSymlink();
+    fs.unlinkSync(link);
+    removeConfig("archimedes.test");
+    expect(fs.existsSync(link)).toBe(false);
+  });
+
+  it("dangling symlink: saveConfig recreates the destination, link live again", () => {
+    const t = setupSymlink("nope.json");
+    saveConfig("archimedes.test", { c: 3 });
+    expect(fs.existsSync(t)).toBe(true);
+    const data = JSON.parse(fs.readFileSync(t, "utf-8"));
+    expect(data["archimedes.test"]).toEqual({ c: 3 });
+    expect(fs.lstatSync(settingsLink()).isSymbolicLink()).toBe(true);
+  });
+
+  it("dangling symlink: removeConfig is a no-op, link untouched", () => {
+    const t = setupSymlink("nope2.json");
+    removeConfig("archimedes.test");
+    expect(fs.lstatSync(settingsLink()).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(t)).toBe(false);
+  });
+
+  it("temp-write failure leaves the original file untouched", () => {
+    const t = setupSymlink();
+    const beforeRaw = fs.readFileSync(t, "utf-8");
+    // The temp file is written beside the target (inside tempDir), so make the
+    // parent directory read-only: the temp write fails (EACCES), the rename is
+    // never attempted, and the live file must survive untouched.
+    const mode = fs.statSync(tempDir).mode;
+    fs.chmodSync(tempDir, 0o555);
+    try {
+      expect(() => saveConfig("archimedes.test", { e: 5 })).toThrow();
+      expect(fs.readFileSync(t, "utf-8")).toBe(beforeRaw);
+      expect(fs.existsSync(t + ".tmp")).toBe(false);
+      expect(fs.existsSync(settingsLink() + ".tmp")).toBe(false);
+      expect(fs.lstatSync(settingsLink()).isSymbolicLink()).toBe(true);
+    } finally {
+      fs.chmodSync(tempDir, mode);
+    }
+  });
+
+  it("sibling namespaces survive a save", () => {
+    const t = setupSymlink(undefined, { "archimedes.other": { keep: true } });
+    saveConfig("archimedes.test", { d: 4 });
+    const data = JSON.parse(fs.readFileSync(t, "utf-8"));
+    expect(data["archimedes.other"]).toEqual({ keep: true });
+    expect(data["archimedes.test"]).toEqual({ d: 4 });
+  });
+});
