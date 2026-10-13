@@ -16,7 +16,9 @@ export function registerCommand(pi: ExtensionAPI) {
           break;
         }
         case "status": {
-          const config = loadConfig();
+          // `pi` from the enclosing registerCommand — `/web status` reports the
+          // provider the *effective* settings pick, project scope included.
+          const config = loadConfig(pi);
           const provider = resolveProvider(undefined, config);
           const stats = getCacheStats();
           ctx.ui.notify(`Active provider: ${provider.name}\nCache: ${stats.count} items, ${stats.estimatedBytes} bytes`);
@@ -28,7 +30,7 @@ export function registerCommand(pi: ExtensionAPI) {
             ctx.ui.notify("Usage: /web search <query>");
             return;
           }
-          const config = loadConfig();
+          const config = loadConfig(pi);
           const results = await executeSearch([query], {}, config);
           const summary = `Found ${results.results.length} results using ${results.provider}:\n${results.results.map(r => `- ${r.title}: ${r.url}`).join("\n")}`;
           ctx.ui.notify(summary, "info");

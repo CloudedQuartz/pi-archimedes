@@ -28,6 +28,14 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
+// A clipboard reader has no UI handle, and the console is not a surface: the
+// oversized-image report goes to the diagnostics sink (core/src/log.ts).
+const mockDiag = vi.hoisted(() => vi.fn());
+vi.mock("@pi-archimedes/core/log", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@pi-archimedes/core/log")>();
+  return { ...real, diag: mockDiag };
+});
+
 import { readClipboardImage, readClipboardImageViaNativeModule } from "./clipboard.js";
 
 function createMockChildProcess(stdoutData = "", exitCode = 0) {
@@ -183,7 +191,7 @@ describe("readClipboardImage", () => {
       });
     });
 
-    it("logs a console.warn when PowerShell stdout exceeds MAX_BUFFER_BYTES", async () => {
+    it("diagnoses the log when PowerShell stdout exceeds MAX_BUFFER_BYTES", async () => {
       mockGetNativeClipboard.mockReturnValue(undefined);
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -200,9 +208,11 @@ describe("readClipboardImage", () => {
 
       const result = await readClipboardImage({ platform: "win32", environment: {} });
 
-      expect(warnSpy).toHaveBeenCalledWith(
+      expect(mockDiag).toHaveBeenCalledWith(
+        "image-paste",
         "[archimedes] Clipboard image exceeded maximum buffer size (50MB)",
       );
+      expect(warnSpy).not.toHaveBeenCalled();
       expect(result).toBeNull();
       warnSpy.mockRestore();
     });

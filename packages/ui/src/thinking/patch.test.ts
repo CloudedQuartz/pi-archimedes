@@ -97,6 +97,81 @@ describe("patchThinkingRenderer", () => {
 		expect(MockClass.prototype[PATCHED_KEY]).toBeUndefined();
 	});
 
+	it("tells the user through the injected surface when the patch is skipped", async () => {
+		// A skipped patch is a silent feature loss: thinking blocks quietly keep
+		// pi's default styling. The console is not a surface anyone reads (and a
+		// write there smears a fullscreen frame), so the notice is handed to the
+		// caller's notification callback, and the probe detail goes to `diag`.
+		const MockClass = function AssistantMessageComponent() {};
+		MockClass.prototype.updateContent = function updateContent() {
+			if (this.content.type === "text") {
+				this.markdownTheme.codeBlockIndent = "";
+			}
+		};
+
+		vi.doMock("@earendil-works/pi-coding-agent", () => ({
+			AssistantMessageComponent: MockClass,
+			VERSION: "1.0.0",
+			highlightCode: vi.fn(),
+		}));
+		const diag = vi.fn();
+		vi.doMock("@pi-archimedes/core/log", async (importOriginal) => {
+			const real = await importOriginal<typeof import("@pi-archimedes/core/log")>();
+			return { ...real, diag };
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const notify = vi.fn();
+
+		try {
+			const patch = await importPatch();
+			patch(() => ({} as any), undefined, notify);
+
+			expect(notify).toHaveBeenCalledTimes(1);
+			const message = notify.mock.calls[0]![0] as string;
+			// A notify line, not a paragraph: one line, names the lost behaviour.
+			expect(message).not.toContain("\n");
+			expect(message.toLowerCase()).toContain("thinking");
+			expect(warn).not.toHaveBeenCalled();
+			// The detail a developer needs lives in the log file instead.
+			expect(diag).toHaveBeenCalledWith(
+				"ui",
+				expect.stringContaining("hasThinkingCheck: false"),
+			);
+		} finally {
+			vi.doUnmock("@pi-archimedes/core/log");
+			warn.mockRestore();
+		}
+	});
+
+	it("says nothing to the user when no notification surface was supplied", async () => {
+		// The callback is optional: callers without a ctx (tests, future hosts)
+		// must still get the diagnostic in the log rather than a crash.
+		const MockClass = function AssistantMessageComponent() {};
+		MockClass.prototype.updateContent = function updateContent() {
+			if (this.content.type === "text") {
+				this.markdownTheme.codeBlockIndent = "";
+			}
+		};
+		vi.doMock("@earendil-works/pi-coding-agent", () => ({
+			AssistantMessageComponent: MockClass,
+			VERSION: "1.0.0",
+			highlightCode: vi.fn(),
+		}));
+		const diag = vi.fn();
+		vi.doMock("@pi-archimedes/core/log", async (importOriginal) => {
+			const real = await importOriginal<typeof import("@pi-archimedes/core/log")>();
+			return { ...real, diag };
+		});
+
+		try {
+			const patch = await importPatch();
+			expect(() => patch(() => ({} as any))).not.toThrow();
+			expect(diag).toHaveBeenCalled();
+		} finally {
+			vi.doUnmock("@pi-archimedes/core/log");
+		}
+	});
+
 	it("returns early when source lacks markdownTheme reference", async () => {
 		const MockClass = function AssistantMessageComponent() {};
 		MockClass.prototype.updateContent = function updateContent() {

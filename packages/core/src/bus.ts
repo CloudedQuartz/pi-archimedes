@@ -1,5 +1,7 @@
 // ── Bus (pub/sub via globalThis Symbol) ──────────────────────────────────────
 
+import { diag, describeError } from "./log.js";
+
 const BUS_KEY = Symbol.for("archimedes:bus");
 const QUEUE_KEY = Symbol.for("archimedes:busQueue");
 
@@ -16,6 +18,10 @@ interface CostUpdatePayload {
   cacheWriteTokens?: number;
   cost?: number;
 }
+
+// A listener failure is swallowed on purpose (one broken subscriber must not
+// take the rest down), so the log is its only record: `describeError` keeps the
+// stack, which is the part that says where in the listener it went wrong.
 
 // Type-safe globalThis access — avoids `as unknown as` casts
 function getGlobal<T>(key: symbol): T | undefined {
@@ -35,10 +41,10 @@ function createBus(): Bus {
         for (const fn of subs) {
           try {
             Promise.resolve(fn(payload)).catch((err) =>
-              console.error(`[archimedes:bus] Async error in listener for "${event}":`, err));
+              diag("core", `[archimedes:bus] Async error in listener for "${event}": ${describeError(err)}`));
           } catch (err) {
             // Listener errors should not crash other listeners
-            console.error(`[archimedes:bus] Error in listener for "${event}":`, err);
+            diag("core", `[archimedes:bus] Error in listener for "${event}": ${describeError(err)}`);
           }
         }
       } else {
@@ -62,9 +68,9 @@ function createBus(): Bus {
           if (queuedEvent === event) {
             try {
               Promise.resolve(listener(payload)).catch((err) =>
-                console.error(`[archimedes:bus] Async error in listener for "${event}":`, err));
+                diag("core", `[archimedes:bus] Async error in listener for "${event}": ${describeError(err)}`));
             } catch (err) {
-              console.error(`[archimedes:bus] Error in listener for "${event}":`, err);
+              diag("core", `[archimedes:bus] Error in listener for "${event}": ${describeError(err)}`);
             }
           }
         }

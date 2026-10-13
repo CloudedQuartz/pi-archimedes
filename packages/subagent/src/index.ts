@@ -8,6 +8,7 @@ import { formatParallelResults } from "./format.js";
 import { renderSubagentResult } from "./render.js";
 import { OVERLAY_CHROME } from "@pi-archimedes/core/overlay";
 import { renderToolHeader } from "@pi-archimedes/core/tool-render";
+import { reportPiSupport } from "@pi-archimedes/core/pi-support";
 import { discoverAgents, discoverAgentsAll, findAgent, formatAgentList } from "./agents.js";
 import { validateModel, firstError } from "./model-validation.js";
 import type {
@@ -27,6 +28,14 @@ interface RenderTheme {
 // ── Tool registration ───────────────────────────────────────────────────────
 
 export function registerSubagent(pi: ExtensionAPI): void {
+  // Floor check before anything that can fail (ADR 0026). This package spawns
+  // pi with flags and reads event fields that only behave correctly on 1.x
+  // (`--tools` semantics, `agent_settled.aborted`, print-mode exit codes), and a
+  // peer range cannot say so at install time. Warn and register anyway — the
+  // tool must still show up in /plugins. Entry point for both meta and the
+  // standalone default export, so `registerAgentsCommand` needs no second call.
+  reportPiSupport("subagent", "1.2.0");
+
   pi.registerTool({
     name: "subagent",
     label: "Subagent",

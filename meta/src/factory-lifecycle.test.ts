@@ -51,6 +51,13 @@ vi.mock("@pi-archimedes/core/profiler", () => ({
   print: vi.fn(),
   reset: vi.fn(),
 }));
+// Diagnostics go to the log sink, never the console (core/src/log.ts), so the
+// failure assertions below watch `diag`.
+vi.mock("@pi-archimedes/core/log", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@pi-archimedes/core/log")>();
+  return { ...real, diag: vi.fn() };
+});
+import { diag } from "@pi-archimedes/core/log";
 vi.mock("@pi-archimedes/core", () => ({
   registerCore: vi.fn(),
 }));
@@ -280,6 +287,8 @@ describe("first-run sequencing (session_start → offerKeybindingFix, then runOn
     vi.mocked(offerKeybindingFix).mockRejectedValueOnce(new Error("boom"));
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
+    const diagBefore = vi.mocked(diag).mock.calls.length;
+
     const ctx = { ui: { theme: "dark" } };
     const { fireFirstRunHandler } = freshFactory();
 
@@ -289,13 +298,14 @@ describe("first-run sequencing (session_start → offerKeybindingFix, then runOn
     // Drain the microtask queue so the .catch() branch has had time to run.
     await new Promise((r) => setTimeout(r, 0));
 
-    // The rejection must have been swallowed and logged — not re-thrown.
-    expect(consoleSpy).toHaveBeenCalledWith(
-      "[archimedes] keybinding offer failed:",
-      expect.any(Error),
-    );
+    // The rejection must have been swallowed and diagnosed — not re-thrown,
+    // and not printed to the console.
+    const lines = vi.mocked(diag).mock.calls.slice(diagBefore).map(([scope, message]) => `${scope} ${message}`);
+    expect(lines.some((l) => l.includes("keybinding offer failed") && l.includes("boom"))).toBe(true);
     // A failed offer must not block the onboarding (reloaded stays false).
     expect(vi.mocked(runOnboarding)).toHaveBeenCalledTimes(1);
+    // …and nothing about the failure reaches the console.
+    expect(consoleSpy).not.toHaveBeenCalled();
 
     consoleSpy.mockRestore();
   });

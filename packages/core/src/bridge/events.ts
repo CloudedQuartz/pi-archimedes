@@ -24,6 +24,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getBus, Events } from "../bus.js";
+import { diag } from "../log.js";
 import { sendEvent, request } from "./channel.js";
 
 let refcount = 0;
@@ -114,7 +115,7 @@ export function start(): void {
     // refcount === 0 is a bug signal (by the module's own invariant, every
     // ASK_REQUEST is paired) — log it so the protocol violation doesn't
     // disappear without a trace.
-    if (refcount === 0) console.warn("[archimedes:bridge] unpaired ASK_RESPONSE received (refcount already 0)");
+    if (refcount === 0) diag("core", "[archimedes:bridge] unpaired ASK_RESPONSE received (refcount already 0)");
     refcount = Math.max(0, refcount - 1);
     pushState();
   }));

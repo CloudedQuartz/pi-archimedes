@@ -1,4 +1,6 @@
-/** Lightweight startup profiler — prints per-package timings when PI_TIMING=1. */
+/** Lightweight startup profiler — records per-package timings when PI_TIMING=1. */
+
+import { diag } from "./log.js";
 
 const ENABLED = process.env.PI_TIMING === "1";
 
@@ -32,18 +34,25 @@ export function reset(): void {
   globalThis[TIMINGS_KEY] = { baseline: Date.now(), entries: [] };
 }
 
-/** Print accumulated timings to stderr. Call once at session_shutdown or on demand. */
+/**
+ * Append accumulated timings to the diagnostics log. Call once at
+ * session_shutdown or on demand.
+ *
+ * `PI_TIMING=1` decides *what* is measured; `PI_ARCHIMEDES_LOG` decides where
+ * it lands. Both are required to see anything, because timings are a developer
+ * diagnostic and the console is off-limits: on fullscreen screen a stray write
+ * smears the viewport, and in a subagent child it is discarded before anyone
+ * reads it.
+ */
 export function print(): void {
   if (!ENABLED) return;
   const state = getState();
   if (state.entries.length === 0) return;
 
   let prevMs = 0;
-  console.error("");
   for (const entry of state.entries) {
     const delta = entry.ms - prevMs;
     prevMs = entry.ms;
-    console.error(`  archimedes: ${entry.label}: +${delta}ms (${entry.ms}ms cumulative)`);
+    diag("core", `archimedes: ${entry.label}: +${delta}ms (${entry.ms}ms cumulative)`);
   }
-  console.error("".padEnd(60, "-"));
 }

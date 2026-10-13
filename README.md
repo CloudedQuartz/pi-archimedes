@@ -173,6 +173,16 @@ Only want the diffs or footer? Each component is available separately — see [C
 
 Every component keeps its own namespace under `~/.pi/agent/settings.json`, which Pi parses as **strict JSON**. Each component's README documents its namespace, fields, and defaults — including [core](packages/core/README.md) (bus, bridge, chrome, utilities), [ui](packages/ui/README.md) (bash tool styling, framed editor, spinner, thinking, splash), [footer](packages/footer/README.md), [diff](packages/diff/README.md), [notify](packages/notify/README.md), [image-paste](packages/image-paste/README.md), and [sudo](packages/sudo/README.md) (also strict JSON). The `/archimedes` panel covers the settings that have a control; not everything does.
 
+### Diagnostics
+
+The suite never prints to your terminal: a stray write would corrupt the display, and inside a subagent it would be thrown away anyway. Developer diagnostics go to a log file instead, and you opt in by naming it:
+
+```bash
+PI_ARCHIMEDES_LOG=~/.pi/archimedes.log pi
+```
+
+Each line is `[timestamp] [component] message`, appended, and the file's absence is never an error — logging switches itself off rather than breaking a session. `PI_ARCHIMEDES_LOG=` (empty) turns it off; unset is the default and touches no disk. Messages that are yours to act on — a footer that failed to draw, a component that could not be patched — arrive as ordinary on-screen notifications. Add `PI_TIMING=1` to also record startup timings there.
+
 ---
 
 ## Components

@@ -212,15 +212,39 @@ describe("resolveDiffColors", () => {
 		expect(result.fgCtx).toBe("\x1b[38;2;100;100;100m");
 	});
 
-	it("falls back to defaults when getFgAnsi returns empty string", () => {
+	it("passes a terminal-default token through instead of substituting a hardcoded colour", () => {
+		// 1.2.0 answers a token set to "" with `\x1b[39m` — truthy — so the old
+		// `|| FG_ADD` could never fire for it, and the `""` shape that *did* fire
+		// it (pre-0.99.0) substituted a colour where the theme had said "the
+		// terminal's own". Both readings agree on the fix: a terminal default is
+		// an answer, not a missing value.
+		resetDiffColors();
+		for (const token of ["", "\x1b[39m", "\x1b[0m"]) {
+			const result = resolveDiffColors({ getFgAnsi: () => token });
+			expect(result).toEqual({ fgAdd: token, fgDel: token, fgCtx: token });
+		}
+	});
+
+	it("substitutes the hardcoded fallback per token, only where the theme has no answer", () => {
 		resetDiffColors();
 		const theme = {
-			getFgAnsi: () => "",
+			getFgAnsi: (token: string) => {
+				if (token === "toolDiffAdded") return "\x1b[38;2;50;200;50m";
+				// Unknown tokens throw in 1.2.0 (`tokenAnsi`), which used to take
+				// every colour in this row down to the hardcoded set.
+				throw new Error(`Unknown theme color: ${token}`);
+			},
 		};
 		const result = resolveDiffColors(theme);
-		expect(result.fgAdd).toBe(FG_ADD);
+		expect(result.fgAdd).toBe("\x1b[38;2;50;200;50m");
 		expect(result.fgDel).toBe(FG_DEL);
 		expect(result.fgCtx).toBe(FG_DIM);
+	});
+
+	it("keeps the hardcoded set for the no-theme-object path", () => {
+		resetDiffColors();
+		expect(resolveDiffColors(undefined)).toEqual(DEFAULT_DIFF_COLORS);
+		expect(resolveDiffColors({})).toEqual(DEFAULT_DIFF_COLORS);
 	});
 });
 

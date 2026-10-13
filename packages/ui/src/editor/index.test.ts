@@ -95,6 +95,8 @@ const stubTheme = {
 
 interface ConstructOpts {
   spin?: boolean;
+  /** The theme `getTheme()` hands the palette resolver; defaults to `stubTheme`. */
+  theme?: Theme;
   /** The `editorSpinSpeed` setting; × multiplies the style's native per-tick tempo (× 1.5 / × 1 / × 0.6), 32 ms tick floor. */
   spinSpeed?: "slow" | "normal" | "fast";
   /** The `editorSpinStyle` setting (raw setting string tolerated; a style not registered in `SPIN_VARIANTS` yet (batch 4) normalizes to typing frames — the fallback, which stays typing even though the default setting is now pendulum). */
@@ -123,7 +125,7 @@ function makeEditor(opts: ConstructOpts = {}): {
     ? opts.onSpinInterval
     : vi.fn();
   const editor = new HephaestusEditor(tui, editorTheme, keybindings, {
-    getTheme: () => stubTheme,
+    getTheme: () => opts.theme ?? stubTheme,
     isIdle: () => (seq.length > 0 ? (seq.shift() as boolean) : true),
     shutdown: vi.fn(),
     spin: opts.spin,
@@ -816,5 +818,68 @@ describe("EAW terminal fallback", () => {
     } finally {
       widthProbe.probe = (s: string) => s.length;
     }
+  });
+});
+
+// ── 6. Terminal-default chrome: no colour means no slab ────────────────────
+
+describe("terminal-default chrome draws no slab rows", () => {
+  /**
+   * The shape pi 1.2.0's DEFAULT `system` theme answers with on a terminal that
+   * did not report a background (`indexedColors` in pi's system-theme.js gives
+   * every panel token `""`, and the neutral foreground tokens `""` plus SGR 2):
+   * measured against the installed package, not written from the prose —
+   * `getBgAnsi("userMessageBg")` is `"\x1b[49m"` and `getFgAnsi("borderMuted")`
+   * is `"\x1b[39m\x1b[2m"`. `resolvePalette` reads both as *no colour*, so the
+   * palette hands the editor `panelBg: ""` / `panelEdge: ""`.
+   */
+  const terminalDefaultTheme = {
+    appearance: "dark",
+    fg: (_key: string, text: string) => text,
+    getBgAnsi: () => "\x1b[49m",
+    getFgAnsi: () => "\x1b[39m\x1b[2m",
+  } as unknown as Theme;
+
+  /** A theme that does give a panel tint and an edge colour. */
+  const paintedTheme = {
+    appearance: "dark",
+    fg: (_key: string, text: string) => text,
+    getBgAnsi: (key: string) => (key === "userMessageBg" ? "\x1b[48;2;33;59;73m" : "\x1b[49m"),
+    getFgAnsi: (key: string) =>
+      key === "borderMuted" ? "\x1b[38;2;118;129;134m" : "\x1b[39m",
+  } as unknown as Theme;
+
+  const SLABS = ["▁", "▔"];
+
+  it("paints no slab glyphs when the palette has no edge colour", () => {
+    // `panelEdge: ""` documents "no edge". Prepending nothing to a row of `▁`
+    // does not remove the row: the glyphs then paint in the terminal's OWN
+    // foreground, so the default theme on a dark terminal got bright bars above
+    // and below the editor — the opposite of "no colour".
+    const { editor } = makeEditor({ theme: terminalDefaultTheme });
+    const lines = editor.render(60);
+    for (const line of lines) {
+      for (const slab of SLABS) {
+        expect(line, JSON.stringify(line)).not.toContain(slab);
+      }
+    }
+  });
+
+  it("still paints the slab when the theme supplies an edge colour", () => {
+    const { editor } = makeEditor({ theme: paintedTheme });
+    const lines = editor.render(60);
+    expect(lines[0]).toContain("\x1b[38;2;118;129;134m");
+    expect(plain(lines[0]!)).toBe("▁".repeat(60));
+    expect(plain(lines[lines.length - 1]!)).toBe("▔".repeat(60));
+  });
+
+  it("keeps the row count identical either way (blank row, not a removed row)", () => {
+    const painted = makeEditor({ theme: paintedTheme }).editor.render(60);
+    const blank = makeEditor({ theme: terminalDefaultTheme }).editor.render(60);
+    // The frame's height is a layout contract: the edge rows go blank, they do
+    // not disappear.
+    expect(blank).toHaveLength(painted.length);
+    expect(plain(blank[0]!)).toBe(" ".repeat(60));
+    expect(plain(blank[blank.length - 1]!)).toBe(" ".repeat(60));
   });
 });

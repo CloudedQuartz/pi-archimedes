@@ -89,6 +89,7 @@ interface UiSpies {
   setHeader: ReturnType<typeof vi.fn>;
   setEditorComponent: ReturnType<typeof vi.fn>;
   setWorkingVisible: ReturnType<typeof vi.fn>;
+  notify: ReturnType<typeof vi.fn>;
 }
 
 function makeCtx(hasUI = true): { ctx: ExtensionContext; ui: UiSpies } {
@@ -96,6 +97,7 @@ function makeCtx(hasUI = true): { ctx: ExtensionContext; ui: UiSpies } {
     setHeader: vi.fn(),
     setEditorComponent: vi.fn(),
     setWorkingVisible: vi.fn(),
+    notify: vi.fn(),
   };
   const ctx = {
     hasUI,
@@ -224,7 +226,13 @@ describe("packages/ui lifecycle and registration", () => {
           autoCollapseThinking: false,
           thinkingStyle: "Full",
         }),
+        // The user-facing surface is injected: `patch.ts` has no ctx of its
+        // own, and a skipped patch must not be a silent feature loss.
+        expect.any(Function),
       );
+      const patchNotify = vi.mocked(patchThinkingRenderer).mock.calls[0]![2] as (m: string) => void;
+      patchNotify("patch skipped");
+      expect(ui.notify).toHaveBeenCalledWith("patch skipped", "warning");
 
       // Master gate (default toolStyle is Minimal): both overrides registered
       expect(registerBashToolOverride).toHaveBeenCalled();

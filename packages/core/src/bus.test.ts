@@ -152,3 +152,44 @@ describe("Events constant", () => {
     expect(Events.ASK_RESPONSE).toBe("archimedes:ask_response");
   });
 });
+
+// ── What a failing listener leaves in the log ──────────────────────────────
+//
+// A listener error is swallowed on purpose — one broken subscriber must not
+// take the others down — which makes the diagnostics log its only record. The
+// event name says WHICH event, only the stack says WHERE.
+
+describe("listener failure diagnostics", () => {
+  const ENV = "PI_ARCHIMEDES_LOG";
+  const previous = process.env[ENV];
+
+  afterEach(() => {
+    if (previous === undefined) delete process.env[ENV];
+    else process.env[ENV] = previous;
+  });
+
+  it("records the stack of a thrown listener, not just its message", async () => {
+    const { mkdtempSync, readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const target = join(mkdtempSync(join(tmpdir(), "archimedes-bus-log-")), "bus.log");
+    process.env[ENV] = target;
+
+    function listenerThatThrows(): void {
+      throw new Error("subscriber exploded");
+    }
+
+    const bus = getBus();
+    bus.on("diag:test", listenerThatThrows);
+    expect(() => bus.emit("diag:test", "payload")).not.toThrow();
+
+    const logged = readFileSync(target, "utf8");
+    expect(logged).toContain("[core]");
+    expect(logged).toContain('Error in listener for "diag:test"');
+    expect(logged).toContain("subscriber exploded");
+    // The origin: a stack frame naming the function that threw. A message-only
+    // formatter cannot produce this line.
+    expect(logged).toMatch(/\n\s+at\s+\S/);
+    expect(logged).toContain("listenerThatThrows");
+  });
+});

@@ -13,6 +13,8 @@ import { DiffComponent } from "./diff-component.js";
 import type { DiffBg, DiffColors } from "./ansi/index.js";
 import { resetDiffColors } from "./ansi/index.js";
 import { registerWriteTool, registerEditTool } from "./tools/index.js";
+import { diag } from "./log.js";
+import { reportPiSupport } from "./pi-support.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports
@@ -98,8 +100,14 @@ try {
 	};
 	_TextComponent = tui.Text;
 } catch (error) {
-	console.error(
-		`[diff] failed to load Pi SDK: ${error instanceof Error ? error.message : String(error)}`,
+	// A missing SDK means the diff tool is not registered at all, which is a
+	// developer-facing structural failure — the log file, never the console, and
+	// with the stack: this error is swallowed, so nothing else ever prints it.
+	// (Inlined rather than imported: `describeError` lives in core, which a
+	// standalone install does not have — see `pi-support.ts`.)
+	diag(
+		"diff",
+		`[diff] failed to load Pi SDK: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
 	);
 }
 
@@ -108,6 +116,14 @@ export function registerDiffTools(
 	_getTheme: () => Theme,
 	readConfig: () => DiffConfig,
 ): void {
+	// Floor check first, before anything can fail: pi 1.x APIs this package now
+	// relies on are not guaranteed below 1.2.0, and a peer range cannot warn
+	// anyone because pi never installs or solves peers (ADR 0026). Warn and
+	// carry on — a `diff` that declined to load would make /plugins report an
+	// enabled package that registered nothing. Idempotent per package, and this
+	// runs again on every session_start.
+	reportPiSupport("diff", "1.2.0");
+
 	_readConfig = readConfig;
 
 	// Reset theme-derived colors so they are re-derived from the current theme
@@ -118,7 +134,7 @@ export function registerDiffTools(
 	setRenderConfig(() => getConfig());
 
 	if (!_sdk?.createWriteTool || !_sdk?.createEditTool || !_TextComponent) {
-		console.warn("[diff] SDK not available, skipping diff tool registration");
+		diag("diff", "[diff] SDK not available, skipping diff tool registration");
 		return;
 	}
 

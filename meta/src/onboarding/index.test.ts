@@ -362,6 +362,8 @@ describe("runOnboarding write logic (onDone)", () => {
     // The failed write aborts before the marker write → NOT set (a later
     // session re-runs the onboarding and retries).
     expect(mockStore["archimedes.meta"]?.onboarded).not.toBe(true);
+    // The cause is diagnosed in the log file, never printed to the console.
+    expect(consoleSpy).not.toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
 

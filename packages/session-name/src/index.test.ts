@@ -1,4 +1,5 @@
 import { loadConfig } from "@pi-archimedes/core/settings-io";
+import { diag } from "@pi-archimedes/core/log";
 import { describe, expect, it, vi } from "vitest";
 import { thinkingBudgetForLevel } from "@earendil-works/pi-ai/api/simple-options";
 import { generateTitle, registerSessionName, resolveTitleReasoning } from "./index.js";
@@ -65,6 +66,16 @@ function createMockCtx(options: {
 vi.mock("@pi-archimedes/core/settings-io", () => ({
   loadConfig: vi.fn((_namespace, defaults) => defaults),
 }));
+
+// Diagnostics never go to the console (see packages/core/src/log.ts): a write
+// there smears a fullscreen frame and is discarded inside a subagent child. So
+// every "it said something / it said nothing" assertion below watches `diag`.
+vi.mock("@pi-archimedes/core/log", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@pi-archimedes/core/log")>();
+  return { ...real, diag: vi.fn() };
+});
+
+const clearDiag = () => vi.mocked(diag).mockClear();
 
 describe("generateTitle", () => {
   it("generates title, trims quotes and whitespace, and calls pi.setSessionName", async () => {
@@ -135,16 +146,12 @@ describe("generateTitle", () => {
     it.each(["Minimal", "  high  ", "MAX"])("tolerates casing and padding: %s", async (raw) => {
       vi.mocked(loadConfig).mockReturnValueOnce({ reasoning: raw });
       const ctx = createMockCtx({});
-      const log = vi.spyOn(console, "error").mockImplementation(() => {});
-      try {
-        await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
-        expect((ctx.modelRegistry.streamSimple as any).mock.calls[0][2].reasoning).toBe(
-          raw.trim().toLowerCase(),
-        );
-        expect(log).not.toHaveBeenCalled();
-      } finally {
-        log.mockRestore();
-      }
+      clearDiag();
+      await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
+      expect((ctx.modelRegistry.streamSimple as any).mock.calls[0][2].reasoning).toBe(
+        raw.trim().toLowerCase(),
+      );
+      expect(diag).not.toHaveBeenCalled();
     });
 
     it.each([["ultra"], ["off"], [""], [42], [true], [{}], [[]]])(
@@ -152,34 +159,28 @@ describe("generateTitle", () => {
       async (raw) => {
         vi.mocked(loadConfig).mockReturnValueOnce({ reasoning: raw });
         const ctx = createMockCtx({});
-        const log = vi.spyOn(console, "error").mockImplementation(() => {});
-        try {
-          await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
+        clearDiag();
+        await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
 
-          const sent = (ctx.modelRegistry.streamSimple as any).mock.calls[0][2].reasoning;
-          // Invalid config behaves like absent config: the documented default.
-          expect(sent).toBe("minimal");
-          expect(log).toHaveBeenCalledWith(
-            "[archimedes] session-name: ignoring unrecognized reasoning",
-            JSON.stringify(raw),
-          );
-        } finally {
-          log.mockRestore();
-        }
+        const sent = (ctx.modelRegistry.streamSimple as any).mock.calls[0][2].reasoning;
+        // Invalid config behaves like absent config: the documented default.
+        expect(sent).toBe("minimal");
+        // The typo is invisible unless it is reported, and the report is the
+        // single log line naming the rejected value.
+        expect(diag).toHaveBeenCalledWith(
+          "session-name",
+          `[archimedes] session-name: ignoring unrecognized reasoning ${JSON.stringify(raw)}`,
+        );
       },
     );
 
     it("sends no reasoning key when the value is null, and says nothing", async () => {
       vi.mocked(loadConfig).mockReturnValueOnce({ reasoning: null });
       const ctx = createMockCtx({});
-      const log = vi.spyOn(console, "error").mockImplementation(() => {});
-      try {
-        await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
-        expect((ctx.modelRegistry.streamSimple as any).mock.calls[0][2]).not.toHaveProperty("reasoning");
-        expect(log).not.toHaveBeenCalled();
-      } finally {
-        log.mockRestore();
-      }
+      clearDiag();
+      await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
+      expect((ctx.modelRegistry.streamSimple as any).mock.calls[0][2]).not.toHaveProperty("reasoning");
+      expect(diag).not.toHaveBeenCalled();
     });
 
     it("keeps the default when the setting is absent entirely, and says nothing", async () => {
@@ -187,26 +188,18 @@ describe("generateTitle", () => {
       // "minimal" — the common path must stay silent. A regression that warned
       // on every default-configured session would otherwise pass the suite.
       const ctx = createMockCtx({});
-      const log = vi.spyOn(console, "error").mockImplementation(() => {});
-      try {
-        await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
-        expect((ctx.modelRegistry.streamSimple as any).mock.calls[0][2].reasoning).toBe("minimal");
-        expect(log).not.toHaveBeenCalled();
-      } finally {
-        log.mockRestore();
-      }
+      clearDiag();
+      await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
+      expect((ctx.modelRegistry.streamSimple as any).mock.calls[0][2].reasoning).toBe("minimal");
+      expect(diag).not.toHaveBeenCalled();
     });
 
     it("treats undefined like absent config, without warning", () => {
       // Direct call: the generateTitle path can't produce this, since
       // loadConfig fills the default in, but the helper is exported.
-      const log = vi.spyOn(console, "error").mockImplementation(() => {});
-      try {
-        expect(resolveTitleReasoning(undefined)).toBe("minimal");
-        expect(log).not.toHaveBeenCalled();
-      } finally {
-        log.mockRestore();
-      }
+      clearDiag();
+      expect(resolveTitleReasoning(undefined)).toBe("minimal");
+      expect(diag).not.toHaveBeenCalled();
     });
 
     // Pin the invariant against the arithmetic that makes this dangerous. Of
@@ -270,16 +263,16 @@ describe("generateTitle", () => {
     pi.getSessionName.mockImplementation(() => { throw new Error(message); });
     const onSuccess = vi.fn();
     const onFailure = vi.fn();
-    const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      await generateTitle(pi as any, createMockCtx({}) as any, onSuccess, onFailure);
-      expect(onFailure).toHaveBeenCalledTimes(failures);
-      expect(log).toHaveBeenCalledTimes(failures);
-      expect(onSuccess).not.toHaveBeenCalled();
-      expect(pi.setSessionName).not.toHaveBeenCalled();
-    } finally {
-      log.mockRestore();
+    clearDiag();
+    await generateTitle(pi as any, createMockCtx({}) as any, onSuccess, onFailure);
+    expect(onFailure).toHaveBeenCalledTimes(failures);
+    // A swallowed failure is only acceptable if it left a trace.
+    expect(diag).toHaveBeenCalledTimes(failures);
+    if (failures === 1) {
+      expect(diag).toHaveBeenCalledWith("session-name", expect.stringContaining(message));
     }
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(pi.setSessionName).not.toHaveBeenCalled();
   });
 
   it("does not call onFailure when streamSimple returns stopReason === 'aborted'", async () => {
@@ -356,29 +349,28 @@ describe("registerSessionName", () => {
     const error = { stopReason: "error", content: [], errorMessage: "400 boom" };
     const notify = vi.fn();
     const ctx = { ...createMockCtx({ streamSimpleResult: error }), hasUI: scenario !== "no UI", ui: { notify } };
-    const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      await agentEnd({}, ctx);
-      await agentEnd({}, ctx);
-      let finish!: (response: any) => void;
-      const pending = new Promise((resolve) => { finish = resolve; });
-      ctx.modelRegistry.streamSimple.mockReturnValueOnce({ result: vi.fn(() => pending) });
-      await agentEnd({}, ctx);
-      // Change the session/UI while the third request is still pending.
-      if (scenario === "named") pi.setSessionName("Manual name");
-      if (scenario === "stale") pi.getSessionName.mockImplementation(() => { throw new Error("stale context"); });
-      if (scenario === "stale UI") Object.defineProperty(ctx, "hasUI", { get: () => { throw new Error("stale UI"); } });
-      if (scenario === "broken UI") notify.mockImplementation(() => { throw new Error("UI failed"); });
-      finish(error);
-      await pending;
-      await agentEnd({}, ctx);
-      expect(ctx.modelRegistry.streamSimple).toHaveBeenCalledTimes(3);
-      expect(log).toHaveBeenCalledTimes(3);
-      expect(log).toHaveBeenCalledWith("[archimedes] session-name failed:", "400 boom");
-      expect(notify).toHaveBeenCalledTimes(scenario === "UI" || scenario === "broken UI" ? 1 : 0);
-      if (scenario === "UI") expect(notify).toHaveBeenCalledWith(expect.stringContaining("/name"), "warning");
-    } finally {
-      log.mockRestore();
-    }
+    clearDiag();
+    await agentEnd({}, ctx);
+    await agentEnd({}, ctx);
+    let finish!: (response: any) => void;
+    const pending = new Promise((resolve) => { finish = resolve; });
+    ctx.modelRegistry.streamSimple.mockReturnValueOnce({ result: vi.fn(() => pending) });
+    await agentEnd({}, ctx);
+    // Change the session/UI while the third request is still pending.
+    if (scenario === "named") pi.setSessionName("Manual name");
+    if (scenario === "stale") pi.getSessionName.mockImplementation(() => { throw new Error("stale context"); });
+    if (scenario === "stale UI") Object.defineProperty(ctx, "hasUI", { get: () => { throw new Error("stale UI"); } });
+    if (scenario === "broken UI") notify.mockImplementation(() => { throw new Error("UI failed"); });
+    finish(error);
+    await pending;
+    await agentEnd({}, ctx);
+    expect(ctx.modelRegistry.streamSimple).toHaveBeenCalledTimes(3);
+    // Every attempt is diagnosable…
+    expect(diag).toHaveBeenCalledTimes(3);
+    expect(diag).toHaveBeenCalledWith("session-name", "[archimedes] session-name failed: 400 boom");
+    // …but the user is told once, at the retry-budget boundary: three lines of
+    // console noise (or three notifications) is not a report, it is spam.
+    expect(notify).toHaveBeenCalledTimes(scenario === "UI" || scenario === "broken UI" ? 1 : 0);
+    if (scenario === "UI") expect(notify).toHaveBeenCalledWith(expect.stringContaining("/name"), "warning");
   });
 });

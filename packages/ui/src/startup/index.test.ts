@@ -28,10 +28,11 @@ vi.mock("@earendil-works/pi-tui", () => ({
 	stripTerminalSequences: (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""),
 }));
 
-// version — no network in tests
+// version — no network in tests. The comparator is no longer stubbed here: it
+// moved to `@pi-archimedes/core/pi-support` (Task 7) and this file exercises the
+// real one, which is the point now that the same function also gates loading.
 vi.mock("./version.js", () => ({
 	fetchLatestVersion: vi.fn().mockResolvedValue(undefined),
-	compareVersions: () => 0,
 }));
 
 // ── Imports ──────────────────────────────────────────────────────────────────

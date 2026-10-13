@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 
 import { convertToPng } from "@earendil-works/pi-coding-agent";
 import { getNativeClipboard } from "@earendil-works/pi-tui";
+import { diag } from "@pi-archimedes/core/log";
 
 import type { ClipboardImage } from "./types.js";
 
@@ -198,7 +199,7 @@ try {
       if (stdout.length + data.length > MAX_BUFFER_BYTES) {
         if (!exceededMaxBuffer) {
           exceededMaxBuffer = true;
-          console.warn("[archimedes] Clipboard image exceeded maximum buffer size (50MB)");
+          diag("image-paste", "[archimedes] Clipboard image exceeded maximum buffer size (50MB)");
         }
         return;
       }

@@ -26,6 +26,7 @@ import {
   type CoreConfig,
 } from "./config.js";
 import { screenCapabilities, screenMode } from "@pi-archimedes/core/screen-mode";
+import { reportPiSupport } from "@pi-archimedes/core/pi-support";
 import { getUISettingsItems } from "./settings.js";
 import { migrateCoreToUIConfig, migrateCompactThinkingToStyle, migrateRemovedToolPatch } from "./migration.js";
 import { registerBashToolOverride, clearActiveBashIntervals } from "./bash/index.js";
@@ -68,6 +69,14 @@ function clearSpinInterval(): void {
 }
 
 export function registerUI(pi: ExtensionAPI): void {
+  // Floor check before anything that can fail (ADR 0026): pi never installs or
+  // solves peers, so the peer range below cannot warn anyone — the runtime
+  // comparison against the host's own VERSION is the only thing that can. It
+  // records a warning for meta to print once, aggregated; nothing here is
+  // withheld on a below-floor host, because a `ui` that registered nothing
+  // would make /plugins report an enabled package that did nothing.
+  reportPiSupport("ui", "1.2.0");
+
   // One-time migration of any legacy core config to UI config
   migrateCoreToUIConfig();
   migrateCompactThinkingToStyle();
@@ -75,7 +84,7 @@ export function registerUI(pi: ExtensionAPI): void {
   // previous version left on the shared prototype (upgrade + /reload case).
   migrateRemovedToolPatch();
 
-  // Patch console.log for model scope capture
+  // Patch pi's startup stdout for model scope capture
   patchConsoleLog();
 
   pi.on("message_end", (event, _ctx) => {
@@ -249,12 +258,19 @@ export function registerUI(pi: ExtensionAPI): void {
         );
       }
 
-      patchThinkingRenderer(() => ctx.ui.theme, {
-        labelText: config.labelText,
-        labelColor: config.labelColor,
-        autoCollapseThinking: config.autoCollapseThinking,
-        thinkingStyle: normalizeThinkingStyle(config.thinkingStyle),
-      });
+      patchThinkingRenderer(
+        () => ctx.ui.theme,
+        {
+          labelText: config.labelText,
+          labelColor: config.labelColor,
+          autoCollapseThinking: config.autoCollapseThinking,
+          thinkingStyle: normalizeThinkingStyle(config.thinkingStyle),
+        },
+        // The patch's one user-visible diagnostic (a skipped patch) goes to the
+        // notification surface — the console is not a surface on either screen
+        // mode, and a subagent child discards it.
+        (message) => ctx.ui.notify(message, "warning"),
+      );
     }
   });
 }

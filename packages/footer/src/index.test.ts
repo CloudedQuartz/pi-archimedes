@@ -16,10 +16,21 @@ interface FooterInstance {
 
 type FooterFactory = (tui: { requestRender: () => void }, theme: unknown, footerData: unknown) => FooterInstance;
 
+interface HarnessOptions {
+  /** Make the session-entry read the footer depends on throw. */
+  failStats?: boolean;
+  /** Override `ctx.ui.notify` (to simulate a UI that cannot be told). */
+  brokenNotify?: boolean;
+}
+
 interface Harness {
   factory: FooterFactory;
   notify: () => void;
   shutdown: () => void;
+  /** What the footer pushed at `ctx.ui.notify`. */
+  userNotice: ReturnType<typeof vi.fn>;
+  /** What the footer pushed at the diagnostics sink. */
+  diagCalls: Array<[string, string]>;
 }
 
 const THEME = { fg: (_token: string, s: string) => s };
@@ -32,13 +43,27 @@ function makeFooterData() {
   };
 }
 
-async function loadFooter(): Promise<Harness> {
+async function loadFooter(options: HarnessOptions = {}): Promise<Harness> {
   vi.resetModules();
   vi.doMock("./utils/git.js", () => ({
     getGitStatus: () => ({ staged: 0, unstaged: 0, untracked: 0, ahead: 0, behind: 0 }),
     isInsideLinkedWorktree: () => false,
   }));
   vi.doMock("./utils/jj.js", () => ({ getJjBookmark: () => null, getJjChangedFiles: () => 0 }));
+
+  const diagCalls: Array<[string, string]> = [];
+  // Partial mock: the sink is fake (that is what the assertions read), while
+  // `describeError` stays the real one, so a stack assertion here tests the
+  // footer's call site rather than a copy of the formatter.
+  vi.doMock("@pi-archimedes/core/log", async (importOriginal) => {
+    const real = await importOriginal<typeof import("@pi-archimedes/core/log")>();
+    return {
+      ...real,
+      diag: (scope: string, message: string) => {
+        diagCalls.push([scope, message]);
+      },
+    };
+  });
 
   const { registerFooter } = await import("./index.js");
   const { notifyVcsChange } = await import("./utils/vcs-change-events.js");
@@ -53,14 +78,26 @@ async function loadFooter(): Promise<Harness> {
   } as unknown as ExtensionAPI;
 
   let factory: FooterFactory | undefined;
+  const userNotice = vi.fn(() => {
+    if (options.brokenNotify) throw new Error("stale UI");
+  });
   const ctx = {
+    hasUI: true,
     model: undefined,
     ui: {
       setFooter: (f: FooterFactory) => {
         factory = f;
       },
+      notify: userNotice,
     },
-    sessionManager: { getEntries: () => [], getSessionId: () => "s", getLeafId: () => null },
+    sessionManager: {
+      getEntries: () => {
+        if (options.failStats) throw new Error("session store exploded");
+        return [];
+      },
+      getSessionId: () => "s",
+      getLeafId: () => null,
+    },
     getContextUsage: () => undefined,
   } as unknown as ExtensionContext;
 
@@ -71,6 +108,8 @@ async function loadFooter(): Promise<Harness> {
     factory,
     notify: notifyVcsChange,
     shutdown: () => handlers["session_shutdown"]!({}, ctx),
+    userNotice,
+    diagCalls,
   };
 }
 
@@ -167,5 +206,54 @@ describe("footer repaint wiring", () => {
     expect(newestTui.requestRender).toHaveBeenCalledTimes(1);
     expect(midTui.requestRender).not.toHaveBeenCalled();
     expect(staleTui.requestRender).not.toHaveBeenCalled();
+  });
+});
+
+describe("footer render failure surface", () => {
+  it("diagnoses the failure to the log and tells the user exactly once", async () => {
+    // A failed render is a blank status bar — the user must be told — but
+    // `render()` runs on every frame, so the console AND a notify per frame are
+    // both unacceptable: detail to the log, one line to the user.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { factory, userNotice, diagCalls } = await loadFooter({ failStats: true });
+      const footer = factory({ requestRender: vi.fn() }, THEME, makeFooterData());
+
+      expect(footer.render(80)).toEqual([]);
+      expect(footer.render(80)).toEqual([]);
+
+      expect(consoleError).not.toHaveBeenCalled();
+      // One diagnosis per failed frame — the detail is what debugging needs.
+      expect(diagCalls.length).toBe(2);
+      expect(diagCalls[0]![0]).toBe("footer");
+      expect(diagCalls[0]![1]).toContain("session store exploded");
+      // …and it carries the origin, not just the message: `console.error(scope,
+      // err)` used to print the stack, and for a swallowed render failure the
+      // log is the only place that stack ever appears.
+      expect(diagCalls[0]![1]).toMatch(/\n\s+at\s+\S/);
+      expect(userNotice).toHaveBeenCalledTimes(1);
+      expect(userNotice.mock.calls[0]![0]).not.toContain("\n");
+      expect(userNotice.mock.calls[0]![1]).toBe("warning");
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("still records the diagnosis when the UI cannot be told", async () => {
+    // After a session replacement the context can be stale, and a failed
+    // report must not turn into a second failure inside the render path.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { factory, diagCalls } = await loadFooter({ failStats: true, brokenNotify: true });
+      const footer = factory({ requestRender: vi.fn() }, THEME, makeFooterData());
+
+      expect(() => footer.render(80)).not.toThrow();
+      expect(footer.render(80)).toEqual([]);
+      expect(consoleError).not.toHaveBeenCalled();
+      expect(diagCalls.length).toBeGreaterThanOrEqual(1);
+      expect(diagCalls[0]![1]).toContain("session store exploded");
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

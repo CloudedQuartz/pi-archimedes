@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageComponent, VERSION } from "@earendil-works/pi-coding-agent";
 import { Markdown, type MarkdownOptions, type MarkdownTheme, MouseRegion, Spacer, Text, TruncatedText } from "@earendil-works/pi-tui";
+import { diag } from "@pi-archimedes/core/log";
 import type { ThinkingStyle } from "../config.js";
 import { buildMutedMarkdownTheme } from "./theme.js";
 
@@ -21,6 +22,11 @@ const THINKING_STATES_KEY = Symbol.for("archimedes:thinkingStateOverrides");
  * @param config Optional labelText/labelColor overrides for the thinking
  *   block header, and autoCollapseThinking flag. When omitted (or empty/invalid),
  *   the original defaults are used.
+ * @param notify The user-facing surface (`ctx.ui.notify`), injected because
+ *   this module has no `ExtensionContext` of its own. A skipped patch is a
+ *   silent feature loss — the muted thinking theme simply stops applying — so
+ *   it is the one diagnostic here the user has to hear about. Omit it and the
+ *   notice is dropped: the detail still reaches the log.
  */
 export function patchThinkingRenderer(
   getTheme: () => Theme,
@@ -30,6 +36,7 @@ export function patchThinkingRenderer(
     autoCollapseThinking?: boolean;
     thinkingStyle?: ThinkingStyle;
   },
+  notify?: (message: string) => void,
 ): void {
   if (!AssistantMessageComponent) return;
 
@@ -52,12 +59,21 @@ export function patchThinkingRenderer(
   const hasThinkingCheck = /content\.type\s*===\s*["']thinking["']/.test(src);
   const hasMarkdownTheme = src.includes("this.markdownTheme");
   if (!hasThinkingCheck || !hasMarkdownTheme) {
-    console.warn(
-      `[archimedes] Skipping thinking renderer patch — signature mismatch
-  hasThinkingCheck: ${hasThinkingCheck}, hasMarkdownTheme: ${hasMarkdownTheme}
-  This likely means pi's AssistantMessageComponent changed. The muted theme
-  for thinking blocks will not be applied.`,
+    // The user loses the muted thinking theme and cannot see why, so this one
+    // goes to the notification surface — one line — while the probe result a
+    // developer needs goes to the log. Neither goes to the console: a write
+    // smears a fullscreen frame and is discarded inside a subagent child.
+    diag(
+      "ui",
+      `[archimedes] Skipping thinking renderer patch — signature mismatch: hasThinkingCheck: ${hasThinkingCheck}, hasMarkdownTheme: ${hasMarkdownTheme}. This likely means pi's AssistantMessageComponent changed.`,
     );
+    try {
+      notify?.(
+        "Thinking renderer patch skipped: pi's AssistantMessageComponent changed, so thinking blocks keep pi's default styling.",
+      );
+    } catch {
+      // A surface that cannot deliver the notice must not fail the session.
+    }
     return;
   }
 
@@ -70,7 +86,7 @@ export function patchThinkingRenderer(
   } else {
     // First patch or version changed — warn if version mismatch
     if ((proto as any)[PATCHED_KEY] && patchVersion && patchVersion !== currentVersion) {
-      console.warn(`[archimedes] Re-patching thinking renderer: pi version changed ${patchVersion} → ${currentVersion}`);
+      diag("ui", `[archimedes] Re-patching thinking renderer: pi version changed ${patchVersion} → ${currentVersion}`);
     }
   }
 

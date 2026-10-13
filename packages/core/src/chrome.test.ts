@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { resolvePalette } from "./chrome.js";
+import { Theme as PiTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { isTerminalDefault, resolvePalette } from "./chrome.js";
 
 // ── Mock theme (mirrors the stubTheme / safeThemeColor assertion style) ──
 
@@ -49,5 +51,288 @@ describe("resolvePalette spin", () => {
     const p = resolvePalette(makeTheme({}));
     // Same fallback the safeThemeColor chain already uses for borderMuted/border
     expect(p.spin("t")).toBe("\x1b[38;2;74;74;74mt\x1b[0m");
+  });
+});
+
+// ── Panel tint and edge ─────────────────────────────────────────────────────
+//
+// pi 0.99.0 made a theme token allowed to be `""` — *terminal default* — and
+// `Theme.getBgAnsi()` renders that as `\x1b[49m`, a truthy string (measured
+// against pi 1.2.0 below). A `getBgAnsi(...) ?? FALLBACK` chain therefore never
+// reaches the fallback, and a `bgToFgAnsi()` that only understood `48;2;` and
+// `48;5;` answered a terminal-default background with the near-black slab, so a
+// panel got black borders on a light terminal. The rule these tests pin: the
+// theme token plus `theme.appearance` decide colour; a terminal-default token
+// means *no colour*; and nothing is inferred by parsing an escape sequence.
+
+interface PanelTokens {
+  /** Answers for `getBgAnsi`; a missing key makes the accessor throw. */
+  bg?: Record<string, string>;
+  /** Answers for `getFgAnsi`; a missing key makes the accessor throw. */
+  fg?: Record<string, string>;
+  /** `Theme.appearance`, which only exists from pi 0.99.0 on. */
+  appearance?: "light" | "dark";
+}
+
+function makePanelTheme(tokens: PanelTokens): Theme {
+  return {
+    ...(tokens.appearance === undefined ? {} : { appearance: tokens.appearance }),
+    fg: (key: string, text: string) => {
+      const token = tokens.fg?.[key];
+      return token === undefined ? undefined : `${token}${text}\x1b[0m`;
+    },
+    getBgAnsi: (key: string) => {
+      const token = tokens.bg?.[key];
+      if (token === undefined) throw new Error(`Unknown theme color: ${key}`);
+      return token;
+    },
+    getFgAnsi: (key: string) => {
+      const token = tokens.fg?.[key];
+      if (token === undefined) throw new Error(`Unknown theme color: ${key}`);
+      return token;
+    },
+  } as unknown as Theme;
+}
+
+/**
+ * A **real** pi 1.2.0 `Theme`. Constructing one needs every token that another
+ * token falls back to (`scrollbarTrack`→`muted`, `scrollbarThumb`/`searchMatchText`→`text`,
+ * `searchMatchBg`→`selectedBg`, `thinkingMax`→`thinkingXhigh`), because the
+ * constructor resolves those eagerly. The token values below are the dark
+ * theme's; `appearance` is declared so a test can ask about a light terminal
+ * without shipping a second token table.
+ */
+function realPiTheme(
+  overrides: Record<string, string | number>,
+  options: { appearance: "light" | "dark"; mode?: "truecolor" | "256color" },
+): Theme {
+  const tokens: Record<string, string | number> = {
+    text: "#d8d8d8",
+    muted: "#8a8a8a",
+    dim: "#6a6a6a",
+    accent: "#c586c0",
+    border: "#5f7a91",
+    borderMuted: "#768186",
+    scrollbarTrack: "#3a3a3a",
+    scrollbarThumb: "#d8d8d8",
+    selectedBg: "#213b49",
+    searchMatchBg: "#3a3a21",
+    searchMatchText: "#d8d8d8",
+    thinkingXhigh: "#c586c0",
+    thinkingMax: "#e06c75",
+    userMessageBg: "#213b49",
+    customMessageBg: "#3a3055",
+    toolDiffAdded: "#68b78d",
+    toolDiffRemoved: "#e06c75",
+    toolDiffContext: "#8a8a8a",
+    ...overrides,
+  };
+  return new PiTheme(
+    tokens as never,
+    tokens as never,
+    options.mode ?? "truecolor",
+    { appearance: options.appearance },
+  ) as unknown as Theme;
+}
+
+describe("isTerminalDefault", () => {
+  it("recognises every shape of \"the terminal's own colour\"", () => {
+    // "" is the pre-0.99.0 answer for a default token; the two 39/49 resets are
+    // what Theme.getFgAnsi()/getBgAnsi() actually return for a token set to "";
+    // the 0m forms are a full reset, which also leaves the colour unset.
+    expect(isTerminalDefault("")).toBe(true);
+    expect(isTerminalDefault("\x1b[39m")).toBe(true);
+    expect(isTerminalDefault("\x1b[49m")).toBe(true);
+    expect(isTerminalDefault("\x1b[0m")).toBe(true);
+    expect(isTerminalDefault("\x1b[m")).toBe(true);
+    expect(isTerminalDefault(undefined)).toBe(true);
+  });
+
+  it("does not mistake a colour for the terminal default", () => {
+    // These are *compared* against the reset set — never cracked open for the
+    // colour they encode (see the discipline test below).
+    expect(isTerminalDefault("\x1b[48;2;33;59;73m")).toBe(false);
+    expect(isTerminalDefault("\x1b[48;5;236m")).toBe(false);
+    expect(isTerminalDefault("\x1b[38;5;2m")).toBe(false);
+    expect(isTerminalDefault("\x1b[49;38;2;1;2;3m")).toBe(false);
+  });
+});
+
+describe("resolvePalette panel tint and edge", () => {
+  it("paints nothing when the panel token is the terminal default (\\x1b[49m)", () => {
+    // The reported bug: pi's default `system` theme gives its panels no
+    // background on a terminal that reported nothing, so getBgAnsi() answers
+    // `\x1b[49m` — truthy — and the old chain tinted with it while deriving a
+    // near-black edge.
+    const p = resolvePalette(
+      makePanelTheme({
+        appearance: "light",
+        bg: { userMessageBg: "\x1b[49m", customMessageBg: "\x1b[49m" },
+        fg: { borderMuted: "\x1b[38;2;154;162;167m", border: "\x1b[38;2;118;163;191m" },
+      }),
+    );
+    expect(p.panelBg).toBe("");
+    expect(p.panelEdge).toBe("");
+  });
+
+  it("treats the pre-0.99.0 empty token as the same \"no colour\" answer", () => {
+    const p = resolvePalette(makePanelTheme({ bg: { userMessageBg: "" } }));
+    expect(p.panelBg).toBe("");
+    expect(p.panelEdge).toBe("");
+  });
+
+  it("reads a bare reset as \"no colour\" too", () => {
+    for (const reset of ["\x1b[0m", "\x1b[m", "\x1b[39m", "\x1b[49m"]) {
+      const p = resolvePalette(makePanelTheme({ bg: { userMessageBg: reset } }));
+      expect(p.panelBg, `reset ${JSON.stringify(reset)}`).toBe("");
+      expect(p.panelEdge, `reset ${JSON.stringify(reset)}`).toBe("");
+    }
+  });
+
+  it("keeps tinting with a real truecolour panel token, byte for byte", () => {
+    // pi 1.2.0's dark theme measures userMessageBg as exactly this sequence.
+    const p = resolvePalette(
+      makePanelTheme({
+        appearance: "dark",
+        bg: { userMessageBg: "\x1b[48;2;33;59;73m" },
+        fg: { borderMuted: "\x1b[38;2;118;129;134m" },
+      }),
+    );
+    expect(p.panelBg).toBe("\x1b[48;2;33;59;73m");
+  });
+
+  it("takes the edge from the theme's border token, not from rewriting the bg escape", () => {
+    // The slab seals a tinted panel, so it is a border-ish decoration: the
+    // theme's own border colour is the honest choice. Rewriting the background
+    // escape into a foreground one is exactly the parsing this task removes.
+    const p = resolvePalette(
+      makePanelTheme({
+        appearance: "dark",
+        bg: { userMessageBg: "\x1b[48;2;33;59;73m" },
+        fg: { borderMuted: "\x1b[38;2;118;129;134m", border: "\x1b[38;2;95;122;145m" },
+      }),
+    );
+    expect(p.panelEdge).toBe("\x1b[38;2;118;129;134m");
+    expect(p.panelEdge).not.toBe("\x1b[38;2;33;59;73m");
+  });
+
+  it("uses `border` when the theme has no `borderMuted`, and no edge at all when both are default", () => {
+    const borderOnly = resolvePalette(
+      makePanelTheme({
+        bg: { userMessageBg: "\x1b[48;2;33;59;73m" },
+        fg: { border: "\x1b[38;2;95;122;145m" },
+      }),
+    );
+    expect(borderOnly.panelEdge).toBe("\x1b[38;2;95;122;145m");
+
+    const defaultBorder = resolvePalette(
+      makePanelTheme({
+        bg: { userMessageBg: "\x1b[48;2;33;59;73m" },
+        fg: { borderMuted: "\x1b[39m", border: "\x1b[39m" },
+      }),
+    );
+    expect(defaultBorder.panelBg).toBe("\x1b[48;2;33;59;73m");
+    expect(defaultBorder.panelEdge).toBe("");
+  });
+
+  it("tracks a palette terminal: the 48;5; tint pairs with the theme's 38;5; border", () => {
+    // `"terminal": { "trueColor": false }` makes every token come back as
+    // 38;5;n / 48;5;n (measured: userMessageBg #262626 -> \x1b[48;5;236m).
+    const p = resolvePalette(
+      makePanelTheme({
+        appearance: "dark",
+        bg: { userMessageBg: "\x1b[48;5;236m" },
+        fg: { borderMuted: "\x1b[38;5;240m" },
+      }),
+    );
+    expect(p.panelBg).toBe("\x1b[48;5;236m");
+    expect(p.panelEdge).toBe("\x1b[38;5;240m");
+  });
+
+  it("falls back to a LIGHT slab when the theme reports a light appearance and no panel token", () => {
+    // The fallback slab is only for a theme that cannot answer at all; even
+    // then it must not paint near-black on a light terminal.
+    const p = resolvePalette(makePanelTheme({ appearance: "light" }));
+    expect(p.panelBg).toBe("\x1b[48;2;238;238;238m");
+    expect(p.panelEdge).toBe("\x1b[38;2;238;238;238m");
+  });
+
+  it("keeps the near-black slab for a dark appearance, and for no theme object at all", () => {
+    const dark = resolvePalette(makePanelTheme({ appearance: "dark" }));
+    expect(dark.panelBg).toBe("\x1b[48;2;16;16;16m");
+    expect(dark.panelEdge).toBe("\x1b[38;2;16;16;16m");
+
+    // Headless / no theme object: the hardcoded constants, dark, and no throw.
+    const none = resolvePalette(null as unknown as Theme);
+    expect(none.panelBg).toBe("\x1b[48;2;16;16;16m");
+    expect(none.panelEdge).toBe("\x1b[38;2;16;16;16m");
+  });
+});
+
+describe("resolvePalette against a real pi 1.2.0 Theme", () => {
+  it("paints no tint and no edge for the system-theme shape (panel tokens are \"\")", () => {
+    const theme = realPiTheme(
+      { userMessageBg: "", customMessageBg: "" },
+      { appearance: "light" },
+    );
+    // The two facts the fix turns on, measured on the real object rather than
+    // asserted from the plan's prose.
+    expect(theme.getBgAnsi("userMessageBg")).toBe("\x1b[49m");
+    expect(theme.appearance).toBe("light");
+
+    const p = resolvePalette(theme);
+    expect(p.panelBg).toBe("");
+    expect(p.panelEdge).toBe("");
+  });
+
+  it("tints with the real theme's own background and edges with its real border", () => {
+    const theme = realPiTheme({}, { appearance: "dark" });
+    expect(theme.getBgAnsi("userMessageBg")).toBe("\x1b[48;2;33;59;73m");
+    const p = resolvePalette(theme);
+    expect(p.panelBg).toBe("\x1b[48;2;33;59;73m");
+    expect(p.panelEdge).toBe("\x1b[38;2;118;129;134m");
+  });
+
+  it("follows the palette on a non-truecolour terminal instead of hardcoding anything", () => {
+    const theme = realPiTheme(
+      { userMessageBg: 236, borderMuted: 240 },
+      { appearance: "dark", mode: "256color" },
+    );
+    expect(theme.getBgAnsi("userMessageBg")).toBe("\x1b[48;5;236m");
+    const p = resolvePalette(theme);
+    expect(p.panelBg).toBe("\x1b[48;5;236m");
+    expect(p.panelEdge).toBe("\x1b[38;5;240m");
+  });
+});
+
+// ── Discipline: colour comes from the theme, never from an escape string ───
+
+const CHROME_SOURCE = readFileSync(fileURLToPath(new URL("./chrome.ts", import.meta.url)), "utf8");
+
+describe("chrome.ts discipline", () => {
+  it("has no setThemeBg, and no write to a theme's internal bgColors map", () => {
+    // 1.2.0 renamed the private maps to fgAnsi/bgAnsi, so the write was a
+    // silent no-op with no callers. Deleting it is the decision, not repairing it.
+    expect(CHROME_SOURCE).not.toMatch(/setThemeBg/);
+    expect(CHROME_SOURCE).not.toMatch(/bgColors/);
+  });
+
+  it("infers no colour by parsing an escape sequence", () => {
+    // Emitting `38;2;…`/`48;2;…` constants is fine; cracking open an incoming
+    // `getBgAnsi()` string to decide what to paint is not — that was
+    // `bgToFgAnsi()`, which matched `48;2;`/`48;5;` and fell through to #101010.
+    const offenders = CHROME_SOURCE.split("\n").filter((line) => {
+      const inspects = /\.(startsWith|endsWith|replace|replaceAll|match|matchAll|search|split|test)\(/.test(line);
+      return inspects && /\\x1b|\\u001b|\[3?8;/.test(line);
+    });
+    expect(offenders.map((l) => l.trim())).toEqual([]);
+    expect(CHROME_SOURCE).not.toMatch(/bgToFgAnsi/);
+    // The only escape-string logic allowed is the set membership test.
+    expect(CHROME_SOURCE).toMatch(/isTerminalDefault/);
+  });
+
+  it("still exports the palette and the predicate it grew", () => {
+    expect(typeof resolvePalette).toBe("function");
+    expect(typeof isTerminalDefault).toBe("function");
   });
 });

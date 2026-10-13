@@ -21,7 +21,8 @@ export const FG_SAFE_MUTED = "\x1b[38;2;139;148;158m";
 export const FG_STRIPE = "\x1b[38;2;40;40;40m"; // gray diagonal stripes
 
 export const BORDER_BAR = "▌";
-const BG_DEFAULT = "\x1b[49m"; // reset to terminal default background
+/** Reset to the terminal's own background — "no background color", not a color. */
+export const BG_DEFAULT = "\x1b[49m";
 
 // ---------------------------------------------------------------------------
 // DiffBg — instance-scoped background colors derived from a theme
@@ -107,6 +108,27 @@ export function themeCacheKey(theme?: any): string {
 
 export { deriveBgFromTheme };
 
+/**
+ * Read one foreground token from a theme, or undefined when the theme has no
+ * answer for it.
+ *
+ * A terminal-default answer is returned as-is. Since 0.99.0 a token set to `""`
+ * comes back as `\x1b[39m` — truthy — so a `getFgAnsi(…) || FG_*` chain could
+ * never fire for it, while the `""` shape that *did* fire it substituted a
+ * hardcoded color where the theme had said "the terminal's own". Both readings
+ * agree: a terminal default is an answer, and the hardcoded `FG_*` constants are
+ * only for a theme that cannot answer at all.
+ */
+function themeFgAnsi(theme: any, token: string): string | undefined {
+	if (typeof theme?.getFgAnsi !== "function") return undefined;
+	try {
+		const ansi = theme.getFgAnsi(token);
+		return typeof ansi === "string" ? ansi : undefined;
+	} catch {
+		return undefined; // unknown token: 1.x throws from `tokenAnsi`
+	}
+}
+
 export function resolveDiffColors(theme?: any): DiffColors {
 	const themeKey = themeCacheKey(theme);
 
@@ -115,13 +137,11 @@ export function resolveDiffColors(theme?: any): DiffColors {
 		_lastThemeKey = themeKey;
 	}
 	if (!theme?.getFgAnsi) return DEFAULT_DIFF_COLORS;
-	try {
-		return {
-			fgAdd: theme.getFgAnsi("toolDiffAdded") || FG_ADD,
-			fgDel: theme.getFgAnsi("toolDiffRemoved") || FG_DEL,
-			fgCtx: theme.getFgAnsi("toolDiffContext") || FG_DIM,
-		};
-	} catch {
-		return DEFAULT_DIFF_COLORS;
-	}
+	// Per token, so one unknown token cannot drag the whole row back to the
+	// hardcoded set.
+	return {
+		fgAdd: themeFgAnsi(theme, "toolDiffAdded") ?? FG_ADD,
+		fgDel: themeFgAnsi(theme, "toolDiffRemoved") ?? FG_DEL,
+		fgCtx: themeFgAnsi(theme, "toolDiffContext") ?? FG_DIM,
+	};
 }

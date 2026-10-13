@@ -28,7 +28,9 @@ export function registerTools(pi: ExtensionAPI) {
     renderCall: renderWebSearchCall,
     renderResult: renderWebSearchResult,
     execute: async (_toolCallId, params, signal, _onUpdate, _ctx) => {
-      const config = loadConfig();
+      // `pi` comes from the enclosing registerTools: `getSettings()` is an
+      // ExtensionAPI method, so a tool's own ctx cannot answer it.
+      const config = loadConfig(pi);
       const queries = params.queries ?? (params.query ? [params.query] : []);
       const proxy = params.proxy ?? config.proxy;
       const { provider, results } = await executeSearch(queries, {
@@ -66,7 +68,7 @@ export function registerTools(pi: ExtensionAPI) {
     renderCall: renderFetchContentCall,
     renderResult: renderFetchContentResult,
     execute: async (_toolCallId, params, signal, _onUpdate, _ctx) => {
-      const config = loadConfig();
+      const config = loadConfig(pi);
       const proxy = params.proxy ?? config.proxy;
       const doc = await extractContent(params.url, params.mode ?? "readable", { 
         ...(params.prompt !== undefined && { prompt: params.prompt }),

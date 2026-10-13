@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
 import { loadConfig } from "@pi-archimedes/core/settings-io";
+import { diag, describeError } from "@pi-archimedes/core/log";
 import type { SettingItem } from "@earendil-works/pi-tui";
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -60,10 +61,10 @@ export function resolveTitleReasoning(raw: unknown): ThinkingLevel | null {
     if (match) return match;
   }
   if (raw !== undefined) {
-    console.error(
-      "[archimedes] session-name: ignoring unrecognized reasoning",
-      JSON.stringify(raw),
-    );
+    // A typo in a hand-edited settings.json is invisible unless reported, but
+    // the report is for whoever debugs the config — the log file, not the
+    // console (which smears a fullscreen frame and is discarded in a child).
+    diag("session-name", `[archimedes] session-name: ignoring unrecognized reasoning ${JSON.stringify(raw)}`);
   }
   return DEFAULT_SESSION_NAME_CONFIG.reasoning ?? null;
 }
@@ -231,7 +232,9 @@ export async function generateTitle(
       return;
     }
     if (response.stopReason === "error") {
-      console.error("[archimedes] session-name failed:", response.errorMessage ?? "title request failed");
+      // The user's notice is the single one at the retry-budget boundary (see
+      // registerSessionName); one line per attempt goes to the log.
+      diag("session-name", `[archimedes] session-name failed: ${response.errorMessage ?? "title request failed"}`);
       onFailure();
       return;
     }
@@ -260,7 +263,7 @@ export async function generateTitle(
   } catch (e) {
     // Session replacement or print-mode teardown makes an in-flight title irrelevant.
     if (e instanceof Error && e.message.includes("stale after session replacement")) return;
-    console.error("[archimedes] session-name failed:", e);
+    diag("session-name", `[archimedes] session-name failed: ${describeError(e)}`);
     onFailure();
   }
 }
