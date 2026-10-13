@@ -1,49 +1,53 @@
 /**
  * Shared overlay chrome — border wrapping, text width math, header/footer
- * rendering. Used by the /agents manager (subagent) and the /archimedes
- * settings overlay (meta) so both screens look identical.
+ * rendering. Used by the /agents manager (subagent), the /archimedes settings
+ * overlay and the /plugins + onboarding overlays (meta) so all of them look
+ * identical.
+ *
+ * All terminal-width maths here is delegated to `@earendil-works/pi-tui`:
+ * `visibleWidth` for measurement, `truncateToWidth` for cutting and padding,
+ * `wrapTextWithAnsi` for word wrapping. `docs/tui.md` asks for exactly that,
+ * and a local re-implementation cannot be right: measuring `.length` after
+ * stripping only `\x1b[…m` counts pi's `CURSOR_MARKER` (an APC sequence) as
+ * seven drawn columns, counts an OSC 8 hyperlink's URL as drawn text, and
+ * counts a CJK glyph as one column when the terminal draws two. The exported
+ * names below are the shared surface; only their bodies changed.
  */
+
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 /** Minimal structural theme — anything with `fg` satisfies it (the real pi-coding-agent Theme, agent-manager's local interface, or a test mock). */
 export interface OverlayTheme {
   fg(token: string, text: string): string;
 }
 
+/**
+ * Visible terminal columns of a string. pi-tui's measurement, re-exported so
+ * every consumer shares one implementation: it ignores SGR, OSC (hyperlinks,
+ * prompt titles) and APC (pi's cursor marker) and honours east-asian widths.
+ */
+export { visibleWidth };
+
+/**
+ * Word-wrap `text` to `width` visible columns, preserving ANSI styling across
+ * the break. Delegates to pi-tui's `wrapTextWithAnsi`, so the break point is
+ * chosen by drawn columns — wide characters count as two, escapes as zero — and
+ * a word that cannot fit is broken rather than allowed to overflow.
+ */
 export function wrapText(text: string, width: number): string[] {
   if (width <= 0) return [];
-  const lines: string[] = [];
-  const paragraphs = text.split("\n");
-  for (const para of paragraphs) {
-    if (para.length === 0) {
-      lines.push("");
-      continue;
-    }
-    const words = para.split(/(\s+)/).filter(Boolean);
-    let current = "";
-    for (const word of words) {
-      const test = current === "" ? word : current + word;
-      if (test.length > width && current.length > 0) {
-        lines.push(current);
-        current = word;
-      } else {
-        current = test;
-      }
-    }
-    if (current) lines.push(current);
-  }
-  return lines;
+  return wrapTextWithAnsi(text, width);
 }
 
+/**
+ * Make `text` exactly `width` columns wide: pad with spaces when short, cut
+ * when long. Delegates to `truncateToWidth` with an empty ellipsis, so a line
+ * that was too long lands on the frame instead of hanging off it (the row is
+ * never longer than `width`, which is what keeps the closing border on-screen).
+ */
 export function padEnd(text: string, width: number): string {
   if (width <= 0) return "";
-  const vw = visibleWidth(text);
-  if (vw >= width) return text;
-  return text + " ".repeat(width - vw);
-}
-
-export function visibleWidth(text: string): number {
-  // Strip ANSI escape sequences for width calculation
-  return text.replace(/\x1b\[[0-9;]*m/g, "").length;
+  return truncateToWidth(text, width, "", true);
 }
 
 export function renderHeader(text: string, width: number, theme: OverlayTheme): string {
@@ -66,35 +70,14 @@ export const OVERLAY_CHROME = { anchor: "center", width: 84, maxHeight: "80%" } 
 
 // ── Border wrapper ────────────────────────────────────────────────────────────
 
-/** Hard-truncate by visible width — no "..." suffix. Strips ANSI, truncates, rebuilds. */
+/**
+ * Hard-truncate to `maxVisible` columns — no "..." suffix. pi-tui walks the
+ * string by grapheme, so a cursor marker, an OSC 8 hyperlink or a wide glyph is
+ * never cut in half; any styling the cut landed inside is closed, which also
+ * stops it bleeding into the padding and the border.
+ */
 export function hardTruncate(text: string, maxVisible: number): string {
-  if (visibleWidth(text) <= maxVisible) return text;
-  // Walk the string, skipping ANSI escape sequences, and stop after
-  // maxVisible visible characters; copy SGR codes through so styling survives,
-  // and append a reset at the end so styling doesn't bleed.
-  let result = "";
-  let plainPos = 0;
-  let i = 0;
-  let copiedSgr = false;
-  while (i < text.length && plainPos < maxVisible) {
-    if (text[i] === "\x1b" && text[i + 1] === "[") {
-      // Copy the escape sequence
-      let j = i;
-      while (j < text.length && text[j] !== "m") j++;
-      result += text.slice(i, j + 1);
-      copiedSgr = true;
-      i = j + 1;
-    } else {
-      result += text[i];
-      plainPos++;
-      i++;
-    }
-  }
-  // Ensure styling doesn't bleed: append reset if we copied SGR and result doesn't end with one
-  if (copiedSgr && !/\x1b\[0?m$/.test(result)) {
-    result += "\x1b[0m";
-  }
-  return result;
+  return truncateToWidth(text, maxVisible, "");
 }
 
 export function wrapWithBorder(lines: string[], width: number, theme: OverlayTheme): string[] {
@@ -106,9 +89,10 @@ export function wrapWithBorder(lines: string[], width: number, theme: OverlayThe
   const bottom = theme.fg("dim", `└${"─".repeat(innerWidth)}┘`);
   const result: string[] = [top];
   for (const line of lines) {
-    const clamped = hardTruncate(line, contentWidth);
-    const padded = " " + padEnd(clamped, contentWidth) + " ";
-    result.push(left + padded + right);
+    // One measured call truncates and pads, so the cell is exactly contentWidth
+    // columns and every row lands on the frame width.
+    const padded = padEnd(line, contentWidth);
+    result.push(left + " " + padded + " " + right);
   }
   result.push(bottom);
   return result;

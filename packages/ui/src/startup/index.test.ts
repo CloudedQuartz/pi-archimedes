@@ -23,6 +23,9 @@ vi.mock("@earendil-works/pi-tui", () => ({
 	},
 	truncateToWidth: (s: string, w: number) => s.slice(0, w),
 	visibleWidth: (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length,
+	// core/text's stripAnsi delegates the sequences its own patterns miss here;
+	// the mock keeps the same SGR-only semantics as visibleWidth above.
+	stripTerminalSequences: (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""),
 }));
 
 // version — no network in tests

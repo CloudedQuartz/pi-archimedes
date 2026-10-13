@@ -7,12 +7,11 @@
  * - left sections alone overflow → three or more lines
  * - below splitThreshold (default 150) → at least two lines, as configured
  * - oversized extension statuses are word-wrapped into multiple chunks so no
- *   content is ever truncated by clampLine
+ *   content is ever truncated by truncateToWidth
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { clampLine } from "@pi-archimedes/core/text";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { loadFooterConfig } from "./config.js";
 import { CostAccumulator } from "./cost-accumulator.js";
 import { getGitStatus, isInsideLinkedWorktree } from "./utils/git.js";
@@ -159,7 +158,7 @@ export function registerFooter(pi: ExtensionAPI): void {
                     line = line ? line + separator + contextBarStr : contextBarStr;
                   }
                 }
-                return clampLine(line, width);
+                return truncateToWidth(line, width);
               })
               .filter((line) => line.length > 0);
           } catch (e) {

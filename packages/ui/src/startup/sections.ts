@@ -1,8 +1,8 @@
-import { clampLine, stripAnsi } from "@pi-archimedes/core/text";
+import { stripAnsi } from "@pi-archimedes/core/text";
 import { gray, rgb, extractRgb, lerp } from "@pi-archimedes/core/color";
 import { TRUECOLOR } from "./logo.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // ── Types ──────────────────────────────────────────────────────
 //
@@ -293,7 +293,7 @@ export function formatColumns(sections: RenderSection[], theme: Theme, maxW: num
 
       if (currentLine && currentW + 2 + itemW > availableW) {
         const rawLine = firstLine ? `${paddedHeader} ${currentStyled}` : " ".repeat(headerW + 1) + currentStyled;
-        lines.push(clampLine(rawLine, maxW));
+        lines.push(truncateToWidth(rawLine, maxW));
         currentLine = item;
         currentStyled = styleItem(item);
         firstLine = false;
@@ -304,7 +304,7 @@ export function formatColumns(sections: RenderSection[], theme: Theme, maxW: num
     }
     if (currentLine) {
       const rawLine = firstLine ? `${paddedHeader} ${currentStyled}` : " ".repeat(headerW + 1) + currentStyled;
-      lines.push(clampLine(rawLine, maxW));
+      lines.push(truncateToWidth(rawLine, maxW));
     }
 
     if (sec.name === "Version") {
