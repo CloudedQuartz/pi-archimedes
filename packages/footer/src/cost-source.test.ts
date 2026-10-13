@@ -10,10 +10,19 @@
  * the same money. These tests are the proof of both halves.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getBus, Events } from "@pi-archimedes/core/bus";
 import { formatTokenCount } from "./utils/format.js";
+
+// Load the footer's module graph at COLLECT time, before any test starts: the
+// first dynamic import used to happen inside the first test, charging it ~0.8s
+// alone / 2.1s in a full run / 5.1s on a loaded machine for transforming and
+// instantiating `index.ts` and its dependencies — a budget spent loading code,
+// not testing, which shows up as "Test timed out in 5000ms" under CPU
+// contention. Same reasoning as `src/index.test.ts`; collection has no test
+// timeout, and `vi.resetModules()` still hands each test a fresh instance.
+import "./index.js";
 
 interface FooterInstance {
   render(width: number): string[];
@@ -56,6 +65,23 @@ function assistantEntry(id: string) {
   };
 }
 
+/**
+ * Footers built by the fixture while a test runs, handed back after it.
+ *
+ * Each test calls `shutdown()` itself, which releases the module-level
+ * subscription — but only if the test gets that far: a failed assertion skips
+ * it, and `session_shutdown` never touched the host's branch-change
+ * subscription anyway, which is the footer's `dispose()` alone. So the release
+ * belongs in a hook rather than in each test's happy path, mirroring
+ * `src/index.test.ts`.
+ */
+let builtFooters: FooterInstance[] = [];
+
+afterEach(() => {
+  for (const footer of builtFooters) footer.dispose();
+  builtFooters = [];
+});
+
 async function installFooter(entries: unknown[]): Promise<{ rendered: (width?: number) => string[]; shutdown: () => void }> {
   vi.resetModules();
   vi.doMock("./utils/git.js", () => ({
@@ -63,6 +89,15 @@ async function installFooter(entries: unknown[]): Promise<{ rendered: (width?: n
     isInsideLinkedWorktree: () => false,
   }));
   vi.doMock("./utils/jj.js", () => ({ getJjBookmark: () => null, getJjChangedFiles: () => 0 }));
+  // Pin the footer's settings to the shipped defaults: `loadFooterConfig()` reads
+  // the developer's `settings.json`, and `expectRendered` below asserts on the
+  // branch the footer paints, so a saved `archimedes.footer.branchMaxLength` of
+  // 1–3 fails these tests for a footer that is working correctly. Same fixture
+  // decision as `src/index.test.ts`.
+  vi.doMock("./config.js", async (importOriginal) => {
+    const real = await importOriginal<typeof import("./config.js")>();
+    return { ...real, loadFooterConfig: () => real.DEFAULT_FOOTER_CONFIG };
+  });
 
   const { registerFooter } = await import("./index.js");
 
@@ -101,6 +136,7 @@ async function installFooter(entries: unknown[]): Promise<{ rendered: (width?: n
     getGitBranch: () => "main",
     getExtensionStatuses: () => new Map<string, string>(),
   });
+  builtFooters.push(footer);
   return {
     rendered: (width = 200) => footer.render(width),
     shutdown: () => handlers["session_shutdown"]!({}, ctx),

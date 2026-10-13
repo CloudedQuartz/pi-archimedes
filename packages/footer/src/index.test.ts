@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -7,6 +7,22 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
  * tests cover the wiring — git.test.ts / jj.test.ts cover when the bus
  * publishes.
  */
+
+// Load the footer's module graph at COLLECT time, before any test starts.
+//
+// Every test below builds a footer from a freshly imported module (`vi.resetModules`
+// + dynamic import), and the first of those imports used to happen inside the
+// first test — so the first test was charged the one-off cost of transforming
+// and instantiating the whole graph (`index.ts` → `pi-tui` → `@pi-archimedes/core`
+// → …): 1.1s when this file runs alone, 2.6s in a full suite run, 8.3s measured
+// on a loaded machine. That is not a test failure, it is a test that spent the
+// 5s default budget loading code, so under CPU contention the run dies with
+// "Test timed out in 5000ms" on whichever test happened to be cold — this one,
+// in practice, and it passed on every re-run, which is what made it look like an
+// ordering race. Collection has no per-test timeout, so paying the cost here
+// removes the race instead of outwaiting it; the tests still get a fresh module
+// instance each time from `vi.resetModules()`, now against a warm graph (~20ms).
+import "./index.js";
 
 interface FooterInstance {
   render(width: number): string[];
@@ -29,6 +45,8 @@ interface Harness {
   shutdown: () => void;
   /** What the footer pushed at `ctx.ui.notify`. */
   userNotice: ReturnType<typeof vi.fn>;
+  /** The mocked `getGitStatus`, spied so a test can prove the footer loaded it. */
+  gitStatus: ReturnType<typeof vi.fn>;
   /** What the footer pushed at the diagnostics sink. */
   diagCalls: Array<[string, string]>;
 }
@@ -43,13 +61,46 @@ function makeFooterData() {
   };
 }
 
+/**
+ * Footers built by the test that is currently running, so `afterEach` can hand
+ * each one back. The VCS-change bus is a module-level listener set, so a test
+ * that built a footer and never disposed it leaves a subscriber behind; today
+ * that is invisible only because `loadFooter` resets the module registry and
+ * takes a fresh listener set with it. Disposing here keeps each test owning its
+ * own subscriptions rather than relying on the reset to launder them — and what
+ * `dispose()` actually hands back is asserted by the tests below, not assumed
+ * by this hook: drop a release from `dispose()` and one of them goes red.
+ */
+let builtFooters: FooterInstance[] = [];
+
+afterEach(() => {
+  for (const footer of builtFooters) footer.dispose();
+  builtFooters = [];
+});
+
 async function loadFooter(options: HarnessOptions = {}): Promise<Harness> {
   vi.resetModules();
+  // Spied, so a test can tell whether the footer loaded the mock below or the
+  // real module: `doMock` applies only to imports after the reset, so a module
+  // graph that survived the collect-time warm-up would mean every assertion in
+  // this file was reading the developer's own repository instead.
+  const getGitStatus = vi.fn(() => ({ staged: 0, unstaged: 0, untracked: 0, ahead: 0, behind: 0 }));
   vi.doMock("./utils/git.js", () => ({
-    getGitStatus: () => ({ staged: 0, unstaged: 0, untracked: 0, ahead: 0, behind: 0 }),
+    getGitStatus,
     isInsideLinkedWorktree: () => false,
   }));
   vi.doMock("./utils/jj.js", () => ({ getJjBookmark: () => null, getJjChangedFiles: () => 0 }));
+  // Pin the footer's own settings to the shipped defaults. `session_start` calls
+  // `loadFooterConfig()`, which reads the developer's `settings.json`, so a saved
+  // `archimedes.footer.branchMaxLength` of 1–3 truncates the branch the fixtures
+  // assert on and a small `splitThreshold` repaginates the line: with
+  // `branchMaxLength: 2` set, three tests here fail on a footer that works
+  // perfectly. Mocked against the real defaults, so the numbers below are the
+  // ones the test claims rather than the ones a laptop happens to hold.
+  vi.doMock("./config.js", async (importOriginal) => {
+    const real = await importOriginal<typeof import("./config.js")>();
+    return { ...real, loadFooterConfig: () => real.DEFAULT_FOOTER_CONFIG };
+  });
 
   const diagCalls: Array<[string, string]> = [];
   // Partial mock: the sink is fake (that is what the assertions read), while
@@ -77,7 +128,7 @@ async function loadFooter(options: HarnessOptions = {}): Promise<Harness> {
     getThinkingLevel: () => "off",
   } as unknown as ExtensionAPI;
 
-  let factory: FooterFactory | undefined;
+  let installed: FooterFactory | undefined;
   const userNotice = vi.fn(() => {
     if (options.brokenNotify) throw new Error("stale UI");
   });
@@ -86,7 +137,7 @@ async function loadFooter(options: HarnessOptions = {}): Promise<Harness> {
     model: undefined,
     ui: {
       setFooter: (f: FooterFactory) => {
-        factory = f;
+        installed = f;
       },
       notify: userNotice,
     },
@@ -103,12 +154,20 @@ async function loadFooter(options: HarnessOptions = {}): Promise<Harness> {
 
   registerFooter(pi);
   handlers["session_start"]!({}, ctx);
-  if (!factory) throw new Error("footer factory was never installed");
+  if (!installed) throw new Error("footer factory was never installed");
+  // Wrap the installed factory so teardown can dispose whatever a test builds
+  // (see `builtFooters`); the tests themselves are unchanged by the wrapper.
+  const factory: FooterFactory = (tui, theme, footerData) => {
+    const footer = installed!(tui, theme, footerData);
+    builtFooters.push(footer);
+    return footer;
+  };
   return {
     factory,
     notify: notifyVcsChange,
     shutdown: () => handlers["session_shutdown"]!({}, ctx),
     userNotice,
+    gitStatus: getGitStatus,
     diagCalls,
   };
 }
@@ -136,6 +195,27 @@ describe("footer repaint wiring", () => {
     expect(tui.requestRender).toHaveBeenCalledTimes(1);
   });
 
+  it("releases the host's branch-change subscription when the footer is disposed", async () => {
+    // `dispose()` has two subscriptions to hand back. The VCS-change one is
+    // observable through `requestRender`, which is how the tests above cover it.
+    // The host's branch-change callback is not observable from here, so nothing
+    // read it: deleting `unsubscribe()` from `dispose()` left every test in this
+    // file green (measured: 125/125 in the package) while a disposed footer
+    // stayed subscribed to the host and kept repainting a screen nobody shows.
+    // This test is what makes that mutation illegal.
+    const branchUnsubscribe = vi.fn();
+    const { factory } = await loadFooter();
+    const footer = factory({ requestRender: vi.fn() }, THEME, {
+      onBranchChange: () => branchUnsubscribe,
+      getGitBranch: () => "main",
+      getExtensionStatuses: () => new Map<string, string>(),
+    });
+
+    expect(branchUnsubscribe).not.toHaveBeenCalled();
+    footer.dispose();
+    expect(branchUnsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it("repaints only the newest footer when the footer is rebuilt without disposal", async () => {
     // A /reload or a second setFooter() call can install a new footer without
     // disposing the old one; a listener left on the previous TUI would paint a
@@ -150,6 +230,47 @@ describe("footer repaint wiring", () => {
     notify();
     expect(liveTui.requestRender).toHaveBeenCalledTimes(1);
     expect(staleTui.requestRender).not.toHaveBeenCalled();
+  });
+
+  it("gives every fixture its own module graph, so no subscription crosses tests", async () => {
+    // The graph is warmed at collect time and the registry is reset per
+    // `loadFooter()` call. Should the warm-up ever leave one graph shared, the
+    // second fixture's `notify()` would drive the FIRST module instance's
+    // listener set and a footer from an earlier fixture would repaint through
+    // it — the order coupling these tests are meant to be free of, and the one
+    // thing a collect-time import could plausibly break. So: assert the reset
+    // is still real, rather than trusting that it is.
+    const earlier = await loadFooter();
+    const earlierTui = { requestRender: vi.fn() };
+    earlier.factory(earlierTui, THEME, makeFooterData());
+    earlier.notify();
+    expect(earlierTui.requestRender).toHaveBeenCalledTimes(1);
+
+    const later = await loadFooter();
+    const laterTui = { requestRender: vi.fn() };
+    later.factory(laterTui, THEME, makeFooterData());
+
+    earlierTui.requestRender.mockClear();
+    later.notify();
+    expect(laterTui.requestRender).toHaveBeenCalledTimes(1);
+    expect(earlierTui.requestRender).not.toHaveBeenCalled();
+  });
+
+  it("paints a frame from the fixture's git mock, not from the machine's repository", async () => {
+    // Companion check to the one above, and about the fixture's own honesty:
+    // `vi.doMock` only reaches imports made after the reset, so a registry that
+    // survived the warm-up would swap the real `./utils/git.js` back in and
+    // every assertion in this file would quietly be reading the developer's
+    // working copy — including the two render tests below, which only ever
+    // exercise the FAILED render path. This asserts a real frame is painted and
+    // that the mock is the module the footer actually called.
+    const { factory, gitStatus } = await loadFooter();
+    const footer = factory({ requestRender: vi.fn() }, THEME, makeFooterData());
+
+    const lines = footer.render(200);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.join(" ")).toContain("main");
+    expect(gitStatus).toHaveBeenCalled();
   });
 
   it("stops requesting renders once session_shutdown fires", async () => {
