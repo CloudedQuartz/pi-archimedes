@@ -2,7 +2,6 @@ import { getBridge } from "@pi-archimedes/core/bridge";
 import { spawnSubagent, resolveModel } from "./spawn.js";
 import { dispatchViaBridge, buildFailedResult } from "./dispatch.js";
 import { streamEvents } from "./stream.js";
-import { emitCostUpdate } from "./cost.js";
 import type { AgentConfig } from "./agents.js";
 import type { SubagentProgress, SubagentResult } from "./types.js";
 
@@ -49,7 +48,11 @@ export async function executeSubagent(options: ExecuteOptions): Promise<Subagent
     // so executeParallel's progress slot updates from the pending placeholder
     // to "failed" instead of a stale "Starting...".
     if (options.signal?.aborted) {
-      const result = buildFailedResult(agentName, options.task, "cancelled", model, Date.now() - startTime);
+      const result = {
+        ...buildFailedResult(agentName, options.task, "cancelled", model, Date.now() - startTime),
+        // Bridge mode: any usage this run ever had belongs to a desktop session.
+        usageAccountedElsewhere: true,
+      };
       options.onUpdate?.(result.progress!);
       return result;
     }
@@ -81,23 +84,21 @@ export async function executeSubagent(options: ExecuteOptions): Promise<Subagent
     if (!("fallback" in outcome)) {
       // Bridge used (success or a response-carrying error, incl. the terminal
       // "cancelled" frame — the desktop is alive, its outcome is authoritative):
-      // return it — NO fork fallback, and NO emitCostUpdate here — the PARENT
-      // never pushes the subagent's usage on the PARENT's bus (the fork-delta
-      // semantics: only the fork path reports a child's usage, source
-      // `subagent:<name>`). The subagent process self-emits its own usage to
-      // its OWN bridge (the core self-usage emitter,
-      // `subagent-metrics-cost-push` Task 1) — a different bus, a different
-      // session; no double-count.
+      // return it, with no cost report of its own. The PARENT never reports a
+      // child's usage for a run it did not perform: the subagent process emits
+      // its OWN usage to its OWN bridge (the core self-usage emitter), which is a
+      // different session's total. Every result `dispatchViaBridge` settles
+      // carries `usageAccountedElsewhere`, which is how the tool knows to leave
+      // it off the tool result — pi folds that `usage` into THIS session's
+      // totals, so copying it across would bill the parent twice. The fork path
+      // below does report, through the tool result's native `usage`.
       return outcome;
     }
     // { fallback: true } — unreachable bridge: fall through to the fork path.
   }
 
-  // Track previously emitted values to only emit deltas
-  let lastEmittedInput = 0;
-  let lastEmittedOutput = 0;
-  let lastEmittedCost = 0;
-
+  // Progress is passed straight through: cost is reported once, on the tool
+  // result's native `usage`, so there is no delta bookkeeping left to do here.
   try {
     const child = spawnSubagent({
       task: options.task,
@@ -112,20 +113,6 @@ export async function executeSubagent(options: ExecuteOptions): Promise<Subagent
       agent: agentName,
       task: options.task,
       onProgress: (progress: SubagentProgress) => {
-        // Emit only deltas to avoid double-counting in CostAccumulator
-        const deltaInput = progress.inputTokens - lastEmittedInput;
-        const deltaOutput = progress.outputTokens - lastEmittedOutput;
-        const deltaCost = progress.cost - lastEmittedCost;
-        if (deltaInput > 0 || deltaOutput > 0 || deltaCost > 0) {
-          emitCostUpdate(agentName, {
-            inputTokens: deltaInput,
-            outputTokens: deltaOutput,
-            cost: deltaCost,
-          });
-          lastEmittedInput = progress.inputTokens;
-          lastEmittedOutput = progress.outputTokens;
-          lastEmittedCost = progress.cost;
-        }
         options.onUpdate?.(progress);
       },
     });
@@ -142,7 +129,8 @@ export async function executeSubagent(options: ExecuteOptions): Promise<Subagent
           // synthesize one so the parallel renderer stays aligned with results.
           {
             agent: agentName,
-            status: result.exitCode === 0 ? "completed" : "failed",
+            status: result.outcome || result.exitCode === 0 ? "completed" : "failed",
+            ...(result.outcome ? { outcome: result.outcome } : {}),
             task: options.task,
             currentTool: undefined,
             currentToolArgs: undefined,

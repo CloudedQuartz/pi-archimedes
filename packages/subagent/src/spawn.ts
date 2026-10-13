@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getBus, Events } from "@pi-archimedes/core/bus";
+import { resolveThinkingLevel } from "./thinking-validation.js";
 import type { AgentConfig } from "./agents.js";
 
 export interface SpawnOptions {
@@ -219,14 +220,35 @@ export function spawnSubagent(options: SpawnOptions): ChildProcess {
     args.push("--model", model);
   }
 
-  // Thinking level from agent config
-  if (options.agent?.thinking) {
-    args.push("--thinking", options.agent.thinking);
+  // Thinking level from agent config. An unknown level is NOT passed on: pi
+  // warns and drops the flag itself, which leaves the child on the default
+  // level with the explanation in a stderr nobody reads for a successful run.
+  // `index.ts` reports the same drop where the user can see it.
+  const thinking = resolveThinkingLevel(options.agent?.thinking);
+  if (thinking.level !== undefined) {
+    args.push("--thinking", thinking.level);
   }
 
-  // Tool allowlist from agent config
-  if (options.agent?.tools && options.agent.tools.length > 0) {
-    args.push("--tools", options.agent.tools.join(","));
+  // Tool allowlist from agent config.
+  //
+  // pi 1.0.4 changed what a non-empty `--tools` does to MCP tools. It no longer
+  // filters them: unless the list is empty or names an `mcp__` entry, they stay
+  // REGISTERED — reachable through codemode and `tool_search` — even though they
+  // are not *declared* to the model (`agent-session.js`: `_allowlistFiltersMcp`
+  // false → `_isAllowedTool` keeps them, `_isActivatable` withholds the
+  // declaration unless `tool_search` can load them). So the child's tool box is
+  // wider than the three names in the config, which is the hole ADR 0028 closed:
+  // `--no-mcp` stops the servers connecting at all, so there is nothing to reach.
+  // A config that wants the servers asks with `mcp: true` — verified against a
+  // live 1.2.0 child: with `--tools read` it sees exactly `read` either way, so
+  // the opt-in's observable effect today is registration, not a declared list
+  // (see ADR 0028's verification note for the open follow-up).
+  const tools = options.agent?.tools ?? [];
+  if (tools.length > 0) {
+    args.push("--tools", tools.join(","));
+    if (options.agent?.mcp !== true) {
+      args.push("--no-mcp");
+    }
   }
 
   // Always exclude the subagent tool itself to prevent infinite recursion

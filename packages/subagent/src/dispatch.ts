@@ -32,6 +32,7 @@
 
 import { dispatch, BridgeTransportError, BridgeCancelledError } from "@pi-archimedes/core/bridge";
 import { resolveModel } from "./spawn.js";
+import { resolveThinkingLevel } from "./thinking-validation.js";
 import type { ExecuteOptions } from "./execute.js";
 import type { SubagentProgress, SubagentResult } from "./types.js";
 
@@ -101,7 +102,9 @@ export function dispatchViaBridge(
     task: options.task,
     systemPrompt: options.agentConfig?.systemPrompt?.trim() || null,
     model: model ?? null,
-    thinking: options.agentConfig?.thinking ?? null,
+    // The same rule the fork path applies: a level pi's `--thinking` would warn
+    // about and drop is not handed to the runner either (`thinking-validation.ts`).
+    thinking: resolveThinkingLevel(options.agentConfig?.thinking).level ?? null,
     tools: options.agentConfig?.tools?.length ? options.agentConfig.tools : null,
   };
 
@@ -114,6 +117,11 @@ export function dispatchViaBridge(
       const progress: SubagentProgress = {
         agent: agentName,
         status: "completed",
+        // The Client ran the session and reported it finished; that is a
+        // completed run in this vocabulary. It has no stopReason to expose and
+        // no cancellation of its own to report — a local cancel settles below
+        // with BridgeCancelledError, which is a failure by contract.
+        outcome: "completed",
         task: options.task,
         currentTool: undefined,
         currentToolArgs: undefined,
@@ -134,6 +142,7 @@ export function dispatchViaBridge(
         agent: agentName,
         task: options.task,
         exitCode: 0,
+        outcome: "completed",
         usage: {
           input: res.metrics.inputTokens,
           output: res.metrics.outputTokens,
@@ -142,6 +151,9 @@ export function dispatchViaBridge(
           cost: res.metrics.cost,
           turns: 0,
         },
+        // The Client ran this as a session of its own and books its usage there;
+        // this session must not also report it. See `SubagentResult`.
+        usageAccountedElsewhere: true,
         model,
         finalOutput: res.output,
         error: undefined,
@@ -169,7 +181,13 @@ export function dispatchViaBridge(
       const isLocalCancel = err instanceof BridgeCancelledError;
       const errorMessage = isLocalCancel ? "cancelled" : err instanceof Error ? err.message : String(err);
       const durationMs = Date.now() - startTime;
-      return buildFailedResult(agentName, options.task, errorMessage, model, durationMs);
+      // Same ownership rule as the success path above: this settled from a
+      // desktop-side session (or a cancel of one), so its usage is that
+      // session's to report even if it ended badly.
+      return {
+        ...buildFailedResult(agentName, options.task, errorMessage, model, durationMs),
+        usageAccountedElsewhere: true,
+      };
     },
   );
 }

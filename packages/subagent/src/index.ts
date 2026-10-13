@@ -3,14 +3,21 @@ import { Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { SUBAGENT_PARAMS_SCHEMA } from "./tool-schema.js";
 import { executeSubagent, executeParallel } from "./execute.js";
-import { formatParallelResults } from "./format.js";
+import { formatParallelResults, formatSingleResult } from "./format.js";
 // agent-manager.js lazy-loaded below to keep subagent tool registration fast
 import { renderSubagentResult } from "./render.js";
 import { OVERLAY_CHROME } from "@pi-archimedes/core/overlay";
 import { renderToolHeader } from "@pi-archimedes/core/tool-render";
 import { reportPiSupport } from "@pi-archimedes/core/pi-support";
+import { diag, describeError } from "@pi-archimedes/core/log";
 import { discoverAgents, discoverAgentsAll, findAgent, formatAgentList } from "./agents.js";
 import { validateModel, firstError } from "./model-validation.js";
+import {
+  unknownToolEntries,
+  formatUnknownToolsWarning,
+} from "./tool-validation.js";
+import { resolveThinkingLevel } from "./thinking-validation.js";
+import { toNativeUsage, sumNativeUsage } from "./usage.js";
 import type {
   SubagentDetails,
   SubagentProgress,
@@ -77,6 +84,9 @@ export function registerSubagent(pi: ExtensionAPI): void {
           // Skip model validation for tasks already caught by unknown-agent check
           if (t.agent && unknownAgentSet.has(t.agent)) continue;
           const taskAgentConfig = t.agent ? findAgent(agents, t.agent) : undefined;
+          // A `tools:` list the config read rejected is never applied, so the task
+          // cannot run as configured — say so before anything spawns.
+          if (taskAgentConfig?.toolsError) errors.push(taskAgentConfig.toolsError);
           const me = firstError(
             validateModel(t.model, ctx.modelRegistry, { agentName: t.agent }),
             validateModel(taskAgentConfig?.model, ctx.modelRegistry, {
@@ -96,6 +106,20 @@ export function registerSubagent(pi: ExtensionAPI): void {
             },
             isError: true,
           };
+        }
+        // Membership only becomes knowable here, with the handle in scope — and
+        // it is a warning, so the batch still runs (see warnUnavailableTools).
+        const warnedTools = new Set<string>();
+        const warnedThinking = new Set<string>();
+        for (const t of params.tasks) {
+          warnUnavailableTools(
+            pi,
+            ctx,
+            warnedTools,
+            t.agent ?? "subagent",
+            t.agent ? findAgent(agents, t.agent)?.tools : undefined,
+          );
+          warnUnknownThinkingLevel(ctx, warnedThinking, t.agent ? findAgent(agents, t.agent)?.thinking : undefined);
         }
         const results: SubagentResult[] = await executeParallel({
           tasks: params.tasks.map((t) => ({
@@ -122,8 +146,10 @@ export function registerSubagent(pi: ExtensionAPI): void {
           },
         });
 
+        const nativeUsage = sumNativeUsage(results);
         return {
           content: [{ type: "text", text: formatParallelResults(results) }],
+          ...(nativeUsage ? { usage: nativeUsage } : {}),
           details: {
             mode: "parallel",
             results,
@@ -167,6 +193,18 @@ export function registerSubagent(pi: ExtensionAPI): void {
             isError: true,
           };
         }
+        // A rejected `tools:` list is a config error, not a runtime one: the child
+        // would run with a different tool set than the config asked for, so it
+        // does not run at all.
+        if (agentConfig?.toolsError) {
+          return {
+            content: [{ type: "text", text: agentConfig.toolsError }],
+            details: { mode: "single", results: [], progress: undefined },
+            isError: true,
+          };
+        }
+        warnUnavailableTools(pi, ctx, new Set(), params.agent ?? "subagent", agentConfig?.tools);
+        warnUnknownThinkingLevel(ctx, new Set(), agentConfig?.thinking);
         const result: SubagentResult = await executeSubagent({
           agent: params.agent ?? undefined,
           agentConfig,
@@ -189,13 +227,26 @@ export function registerSubagent(pi: ExtensionAPI): void {
         });
 
         return {
-          content: [{ type: "text", text: result.finalOutput ?? result.error ?? "completed" }],
+          content: [{ type: "text", text: formatSingleResult(result) }],
+          // The cost report — but only for a run this session performed. A
+          // bridge-dispatched run is a session of the desktop's own and books
+          // its usage there; pi folds a tool result's `usage` into THIS
+          // session's totals, so publishing it here would count the money twice
+          // (the same reason the `COST_UPDATE` route was deleted).
+          ...(result.usageAccountedElsewhere ? {} : { usage: toNativeUsage(result.usage) }),
           details: {
             mode: "single",
             results: [result],
             progress: result.progress ? [result.progress] : undefined,
           },
-          isError: result.exitCode !== 0,
+          // Only a *failed* run is a tool error. A truncated answer and a
+          // cancelled one both produced something, and `isError` is how the model
+          // and the Client decide to retry or give up (ADR 0028). `error` is the
+          // predicate because the exit code is not one — a json child exits 0 for
+          // an errored run — and `stream.ts` guarantees a failed run always
+          // carries an explanation while a completed/truncated/aborted one never
+          // does.
+          isError: result.error !== undefined,
         };
       }
 
@@ -264,6 +315,76 @@ export function registerSubagent(pi: ExtensionAPI): void {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Warn (never fail) about allowlist entries no registered tool satisfies right
+ * now, naming each one.
+ *
+ * Membership cannot be checked any earlier: `pi.getAllTools()` needs this
+ * handle, and the config read is pure filesystem. And it must not fail the run:
+ * a legitimate name is missing whenever its plugin is toggled off or its MCP
+ * server is disconnected, so a hard error would make `tools: web_search` unusable
+ * for anyone who disabled `web`. One warning per entry per tool call — a parallel
+ * batch of eight agents sharing a list warns once, not eight times.
+ *
+ * Diagnostics go to `diag()` because a `console.*` write is discarded by a
+ * subagent child and smears the fullscreen frame (see `core/log.ts`); the
+ * on-screen copy only goes out where there is a UI to receive it.
+ */
+function warnUnavailableTools(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  alreadyWarned: Set<string>,
+  agentName: string,
+  tools: string[] | undefined,
+): void {
+  if (!tools || tools.length === 0) return;
+  let unknown: string[];
+  try {
+    const known = pi.getAllTools().map((t) => t.name);
+    unknown = unknownToolEntries(tools, known).filter((entry) => !alreadyWarned.has(entry));
+  } catch (e) {
+    // A handle that cannot answer is not a reason to lose the dispatch.
+    diag("subagent", `tool-membership check skipped for "${agentName}": ${describeError(e)}`);
+    return;
+  }
+  if (unknown.length === 0) return;
+  for (const entry of unknown) alreadyWarned.add(entry);
+  const message = formatUnknownToolsWarning(agentName, unknown);
+  diag("subagent", message);
+  if (!ctx.hasUI) return;
+  try {
+    ctx.ui.notify(message, "warning");
+  } catch {
+    // A context too stale to notify must not fail the run it is only warning about.
+  }
+}
+
+/**
+ * Warn (never fail) about a `thinking:` level pi's `--thinking` does not take.
+ *
+ * `spawnSubagent` withholds the flag in this case, which is what pi would have
+ * done anyway — the difference is that the child no longer runs at the default
+ * level silently: pi's own notice is a stderr warning, and a successful json
+ * child's stderr is never read. One warning per distinct value per tool call.
+ */
+function warnUnknownThinkingLevel(
+  ctx: ExtensionContext,
+  alreadyWarned: Set<string>,
+  thinking: string | undefined,
+): void {
+  if (thinking === undefined || alreadyWarned.has(thinking)) return;
+  const { warning } = resolveThinkingLevel(thinking);
+  if (!warning) return;
+  alreadyWarned.add(thinking);
+  diag("subagent", warning);
+  if (!ctx.hasUI) return;
+  try {
+    ctx.ui.notify(warning, "warning");
+  } catch {
+    // Same rule as the tool-membership warning: a report must not lose a run.
+  }
+}
 
 export function registerListAgentsTool(pi: ExtensionAPI): void {
   pi.registerTool({

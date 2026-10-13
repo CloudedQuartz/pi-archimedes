@@ -117,3 +117,60 @@ describe("serializeAgent", () => {
     );
   });
 });
+
+// ── mcp round-trip (the writer's half of ADR 0028) ──────────────────────────
+
+describe("serializeAgent: mcp opt-in", () => {
+  it("writes the mcp key when the agent opts in", () => {
+    const output = serializeAgent(makeAgent({ tools: ["read", "bash"], mcp: true }));
+    expect(output).toContain("mcp: true");
+  });
+
+  it("writes no mcp key when the field is absent or false (closed is the default)", () => {
+    expect(serializeAgent(makeAgent({ tools: ["read"] }))).not.toContain("mcp:");
+    expect(serializeAgent(makeAgent({ tools: ["read"], mcp: false }))).not.toContain("mcp:");
+  });
+
+  it("survives a write → read round trip as a real boolean, not a string", async () => {
+    const { parseFrontmatter } = await import("@earendil-works/pi-coding-agent");
+    const output = serializeAgent(makeAgent({ tools: ["read", "bash"], mcp: true }));
+    const { frontmatter } = parseFrontmatter(output);
+    expect(frontmatter.mcp).toBe(true);
+  });
+
+  it("keeps the tools list intact alongside the mcp key", () => {
+    const output = serializeAgent(makeAgent({ tools: ["read", "bash"], mcp: true }));
+    expect(output).toContain("tools: read, bash");
+    expect(output).toContain("mcp: true");
+  });
+});
+
+// ── One `tools:` key, whatever the config object looks like ───────────────
+
+describe("serializeAgent: never writes two tools keys", () => {
+  // The read path preserves an unreadable `tools:` in `extraFields` so a save
+  // cannot delete a line the user typed, while `applyToolEntries` owns the real
+  // `tools` field. If both are populated the file gets two `tools:` keys and the
+  // last one wins on the next read — which is the broken one.
+  const toolsKeys = (yaml: string): string[] =>
+    yaml.split("\n").filter((line) => /^tools:/.test(line));
+
+  it("writes the real field and drops the preserved raw value when both exist", async () => {
+    const { parseFrontmatter } = await import("@earendil-works/pi-coding-agent");
+    const output = serializeAgent(
+      makeAgent({ tools: ["read"], extraFields: { tools: "read, +web_search", owner: "x" } }),
+    );
+    expect(toolsKeys(output)).toEqual(["tools: read"]);
+    expect(parseFrontmatter(output).frontmatter.tools).toBe("read");
+    // The unrelated extra still round-trips.
+    expect(output).toContain("owner: x");
+  });
+
+  it("still writes a preserved raw value when there is no parsed list to replace it", () => {
+    // This is the preservation the read path promised: an agent whose `tools:`
+    // was rejected keeps its line on save, rather than being silently rewritten
+    // without it.
+    const output = serializeAgent(makeAgent({ extraFields: { tools: "read, +web_search" } }));
+    expect(toolsKeys(output)).toEqual(["tools: read, +web_search"]);
+  });
+});

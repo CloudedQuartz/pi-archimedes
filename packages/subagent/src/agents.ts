@@ -8,16 +8,49 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { readLocalConfig } from "./local-config.js";
+import { readToolEntries, validateToolEntries } from "./tool-validation.js";
 
 export interface AgentConfig {
   name: string;
   description: string;
   tools?: string[];
+  /**
+   * Opt this agent's child back in to connecting its MCP servers.
+   *
+   * pi 1.0.4 stopped a non-empty `--tools` filtering MCP tools: they stay
+   * registered (reachable from codemode and `tool_search`) unless the list names
+   * an `mcp__` entry (ADR 0028). The suite therefore passes `--no-mcp` alongside
+   * a non-empty allowlist; `mcp: true` is the one way a config asks for the
+   * servers back. Absent or false means the closed reading. Note the honest
+   * limit, verified against a live 1.2.0 child: pi does not *declare* MCP tools
+   * to a model whose allowlist does not match them, so with a non-empty `tools:`
+   * list the child sees the same declared set with or without this flag — what
+   * the flag changes is whether the servers connect at all (ADR 0028
+   * verification note). Parsed in `loadAgentsFromDir`, written by
+   * `serializeAgent`, shown on the `/agents` detail screen.
+   */
+  mcp?: boolean;
   model?: string;
   thinking?: string;
   systemPrompt: string;
   source: "global" | "user" | "project";
   filePath: string;
+  /**
+   * Set when the `tools:` list was **rejected at config read** — an entry pi
+   * cannot read as a tool name (empty, duplicated, containing a comma, or a
+   * `+`/`-` modifier), or a value that is not a tool list in any spelling pi's
+   * YAML parser produces (comma string, block list, inline list) — a number, a
+   * mapping, or a list holding something that is not a name.
+   *
+   * The list is never applied in that case: a rejected allowlist that falls back
+   * to "no allowlist" would hand the child a *wider* tool set than the config
+   * asked for. Dispatch refuses such an agent (naming the entry and the file),
+   * and the `/agents` panel and `list_agents` report it. The raw value stays in
+   * `extraFields.tools` so saving the agent does not silently delete the line; a
+   * list committed through `applyToolEntries` retires both the raw value and this
+   * error, so the fix actually reaches the file.
+   */
+  toolsError?: string;
   // Extra fields preserved from frontmatter but not editable in TUI
   extraFields?: Record<string, unknown>;
 }
@@ -52,11 +85,35 @@ function loadAgentsFromDir(dir: string, source: "global" | "user" | "project"): 
 
     // Handle tools specially — preserve non-string values in extraFields
     let parsedTools: string[] | undefined;
-    if (typeof frontmatter.tools === "string") {
-      parsedTools = frontmatter.tools.split(",").map((t: string) => t.trim()).filter(Boolean);
+    let toolsError: string | undefined;
+    if (frontmatter.tools !== undefined) {
+      // Every YAML spelling is read (comma string, block list, inline list);
+      // anything that is not a list of names is rejected loudly rather than
+      // dropped, because an unread allowlist means an unrestricted child.
+      const read = readToolEntries(frontmatter.tools, {
+        agentName: String(frontmatter.name),
+        agentFilePath: filePath,
+      });
+      if ("error" in read) {
+        toolsError = read.error;
+      } else {
+        const check = validateToolEntries(read.entries, {
+          agentName: String(frontmatter.name),
+          agentFilePath: filePath,
+        });
+        if (check.ok) {
+          parsedTools = read.entries;
+        } else {
+          toolsError = check.error;
+        }
+      }
     }
 
-    const knownKeys = new Set(["name", "description", "model", "thinking"]);
+    // `mcp: true` opts the child back in to MCP tools (ADR 0028). Quoted YAML
+    // gives the string "true", which means the same thing to a human reader.
+    const mcpOptIn = frontmatter.mcp === true || frontmatter.mcp === "true";
+
+    const knownKeys = new Set(["name", "description", "model", "thinking", "mcp"]);
     const extraFields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(frontmatter)) {
       if (key === "tools") continue; // tools is handled separately above/below
@@ -66,7 +123,9 @@ function loadAgentsFromDir(dir: string, source: "global" | "user" | "project"): 
         extraFields[key] = value;
       }
     }
-    // If tools was non-string, store it in extraFields for round-trip preservation
+    // If tools was non-string, store it in extraFields for round-trip preservation.
+    // A rejected string list is preserved for the same reason: the writer must not
+    // quietly delete a line the user typed.
     if (frontmatter.tools !== undefined && !parsedTools && "tools" in frontmatter) {
       extraFields.tools = frontmatter.tools;
     }
@@ -80,6 +139,8 @@ function loadAgentsFromDir(dir: string, source: "global" | "user" | "project"): 
     };
     if (frontmatter.model) config.model = frontmatter.model as string;
     if (frontmatter.thinking) config.thinking = frontmatter.thinking as string;
+    if (mcpOptIn) config.mcp = true;
+    if (toolsError) config.toolsError = toolsError;
     if (parsedTools && parsedTools.length > 0) config.tools = parsedTools;
     if (Object.keys(extraFields).length > 0) config.extraFields = extraFields;
 
@@ -226,7 +287,13 @@ export function formatAgentList(agents: AgentConfig[]): string {
     let line = `• ${a.name} [${a.source}] — ${a.description}`;
     const extras: string[] = [];
     if (a.model) extras.push(`model: ${a.model}`);
-    if (a.tools && a.tools.length > 0) extras.push(`${a.tools.length} tools`);
+    if (a.toolsError) {
+      // The list was rejected at read, so no allowlist is in force — say so here
+      // rather than letting the agent look like an unconfigured one.
+      extras.push("tools rejected — fix the tools: field");
+    } else if (a.tools && a.tools.length > 0) {
+      extras.push(`${a.tools.length} tools`);
+    }
     if (extras.length > 0) line += ` (${extras.join(", ")})`;
     return line;
   });
