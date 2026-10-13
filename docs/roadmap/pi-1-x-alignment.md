@@ -580,6 +580,8 @@ Peer floors `>=1.2.0` for `ui` and `diff`, plus `reportPiSupport("ui", "1.2.0")`
 
 ### Task 13: Document the new contracts and ship 2.11.0
 
+> **RELEASE GATE — maintainer testing comes first (2026-10-13).** Do not create a tag, push a tag, trigger the release workflow, or run any `publish` command until the maintainer has run a build themselves and said go. Everything else in this task — the feature docs, the AGENTS.md rules, the README rows, the version bump, the PR, CI including `pi-latest`, and the drafted release notes — is prepared and merged as normal; then **stop and hand the build over**. A green CI is not the sign-off; the maintainer's own testing is.
+
 **Context:** Five ADRs and three behaviour changes need present-tense documentation, and the release itself has strict conventions (AGENTS.md "Release Steps" and the release-notes rules: headline first, `## Other changes` one bullet per package, contributor thanks only, every change linked to a PR or full commit URL, no internal jargon, no reference to lineage projects). These are user-visible behaviour changes — children no longer inherit MCP tools, the splash is suppressed on pi's default screen mode, run outcomes are three-valued — so the bump is **minor**: `2.10.4 → 2.11.0`.
 
 **Files:**
@@ -600,7 +602,7 @@ Release notes shape: a leading `## Pi 1.2.0 alignment` section (screen mode supp
 - [ ] Add the AGENTS.md rules and README rows; commit `docs(agents,readme): pi 1.2.0 target and the two never-do rules`. The `suppressNativePaste` row must describe the restoration (ADR 0030 amendment), not "skip the write".
 - [ ] Bump all 13 versions to `2.11.0`; `pnpm install` (refreshes the workspace lockfile) → `pnpm -r exec -- tsc --noEmit` → `pnpm test`; commit `chore: bump version to v2.11.0`.
 - [ ] Push the branch, open the PR, wait for CI **including** `pi-latest` to be green; merge.
-- [ ] Re-run all 12 package type-checks on `main`, then tag and push: `git tag -a v2.11.0 -m "Release v2.11.0" && git push origin main v2.11.0`.
+- [ ] **Gated on the maintainer's own testing — see the release gate above. Do not run this step until they say go.** Re-run all 12 package type-checks on `main`, then tag and push: `git tag -a v2.11.0 -m "Release v2.11.0" && git push origin main v2.11.0`.
 - [ ] Watch the release workflow; confirm the "Verify all packages are on npm" step is green for all 13 packages.
 - [ ] Create the GitHub release with the notes above; delete this roadmap doc and commit `docs: ship pi 1.x alignment`.
 
