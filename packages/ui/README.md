@@ -32,7 +32,8 @@ TUI enhancements for the Pi Archimedes monorepo.
 - **Theme**: Unified styling for thinking blocks.
 
 ### Startup
-- **Splash Logo Reveal**: Engaging animations during initialization.
+- **Splash Logo Reveal**: Engaging animations during initialization, with the running Pi version and the session's model scope (`ctx.scopedModels` — the set `/scoped-models` shows).
+- **Honours Pi's `quietStartup`**: `false` = splash with its details, `"header"` = splash alone, `true` = Pi's own quiet startup (the splash hands the header back). Nothing is scraped from Pi's output to decide this, and the splash makes no network request — Pi's own update check is the only one.
 
 ## Settings (`archimedes.ui`)
 

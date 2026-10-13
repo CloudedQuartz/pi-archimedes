@@ -12,11 +12,14 @@ import { fileURLToPath } from "node:url";
 // renderer nobody draws from. So: never store a renderer; ask the one you were
 // just handed. This test is the mechanical half of that rule.
 //
-// The `\w*tui\w*` widening (not `\btui\b`) is load-bearing: the real offender
-// is `let uiTui: TUI | undefined` in `packages/ui/src/index.ts`, where `ui`
-// glues straight onto `Tui`, so a word-anchored pattern matches nothing in the
-// tree. The patterns are also case-insensitive for the same reason — `uiTui`
-// has a capital T.
+// The `\w*tui\w*` widening (not `\btui\b`) is load-bearing: the shape this
+// guard was written for is `let uiTui: TUI | undefined` in
+// `packages/ui/src/index.ts`, where `ui` glues straight onto `Tui`, so a
+// word-anchored pattern matches nothing of the kind. That declaration is gone
+// (Task 8 deleted the startup un-patch that read it), but the pattern stays
+// widened — the `catches every shape` test below is what proves the widening
+// still has something to catch. The patterns are also case-insensitive for the
+// same reason: a name like `uiTui` has a capital T.
 //
 // Module-scope declarations accept an `export` prefix and an optional type
 // annotation, because those are how the binding is really written: `export let
@@ -45,6 +48,11 @@ const RULES: readonly ViolationRule[] = [
  * Known violations, each with the one-line reason that keeps it, and the
  * removal point. Matched on the exact trimmed line so a *new* violation in the
  * same file still fails the guard.
+ *
+ * Empty as of Task 8: the last entry was the `let uiTui` whose only reader was
+ * the startup `addChild` un-patch, and both went together. Keep the shape of
+ * this list even while it is empty — an exemption without a reason and a
+ * removal point is how the guard quietly widens.
  */
 interface AllowEntry {
   readonly file: string;
@@ -52,14 +60,7 @@ interface AllowEntry {
   readonly reason: string;
 }
 
-const ALLOW_LIST: readonly AllowEntry[] = [
-  {
-    file: "packages/ui/src/index.ts",
-    line: "let uiTui: TUI | undefined;",
-    reason:
-      "Read by the session_shutdown path that un-patches the startup `addChild` hack; gone together with that patch in Task 8 (quietStartup + setHeader).",
-  },
-];
+const ALLOW_LIST: readonly AllowEntry[] = [];
 
 // ── Walking the tree ────────────────────────────────────────────────────────
 
@@ -194,20 +195,20 @@ describe("screen-mode discipline: never store a renderer", () => {
   });
 
   it("keeps the allow-list as small as the work that removes it", () => {
-    // Every entry must still be true of the tree — a stale exemption is a
-    // silently-widened guard.
+    // The list is empty: every renderer hoard the guard was written to excuse
+    // was deleted with the startup patch that needed it (Task 8). An entry
+    // reappearing is allowed only with a reason naming the task that removes
+    // it, so this assertion is the rule, not a snapshot.
+    expect(
+      ALLOW_LIST.map((e) => `${e.file}: ${e.line}`),
+    ).toEqual([]);
     for (const entry of ALLOW_LIST) {
       const actual = readFileSync(join(REPO_ROOT, entry.file), "utf8").split("\n");
       expect(
         actual.some((l) => l.trim() === entry.line),
         `allow-list entry no longer matches ${entry.file}: ${entry.line}`,
       ).toBe(true);
-      expect(entry.reason.length).toBeGreaterThan(0);
-    }
-    // The only tolerated entries are the ones Task 8 deletes along with the
-    // startup `addChild` patch it feeds.
-    for (const entry of ALLOW_LIST) {
-      expect(entry.reason).toMatch(/Task 8/);
+      expect(entry.reason).toMatch(/Task \d+/);
     }
   });
 });

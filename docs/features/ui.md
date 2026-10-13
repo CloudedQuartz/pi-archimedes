@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-10-13
-verified-by: pnpm test
+verified-by: pnpm test + a real pi 1.2.0 TUI session (quietStartup false/"header"/true × tuiMode fullscreen/regular)
 ---
 
 # UI Package (`@pi-archimedes/ui`)
@@ -33,9 +33,11 @@ verified-by: pnpm test
    - `toolStyle` is the **master switch for all Archimedes tool styling**: `Minimal` (default) registers the styled bash/codemode overrides (per-tool `bashToolStyling`/`codemodeToolStyling` toggles fine-tune under it); `Native` registers no overrides at all — pi's native tool rendering stands and no takeover notice is printed. The former `Full` value (auto-expand every tool via a `ToolExecutionComponent` prototype patch) was dropped; `migrateRemovedToolPatch()` restores the true prototype methods if an older version left the patch behind in the same process (upgrade + `/reload`). Legacy `Full`/`Compact` settings normalize to `Minimal` so an upgrade never silently strips styling.
 
 5. **Startup Splash Animation**:
-   - Terminal logo reveal and animation sequences (`animationStyle`), optionally in pi's brand colors (`colorfulLogo`).
-   - Safe console log interception and restoration (`unpatchConsoleLog`).
-   - **Screen mode gates it** (ADR 0027): the animation and the startup resource listing append into terminal scrollback, so they install on regular screen only, decided from the renderer handed to the header factory on every call (screen mode can change mid-session). Fullscreen screen keeps the replaced header — settled at `LOGO_SETTLE_FRAME` via `settleHeader()`, no listing, and sized to its own content (`CONTENT_ONLY_HEIGHT`) instead of padded to terminal height, because nothing there advances the animation ref.
+   - Terminal logo reveal and animation sequences (`animationStyle`), optionally in pi's brand colors (`colorfulLogo`), plus a `[Version]` row stating the running pi version. pi owns its own update check (`pi update`, `/changelog`, `PI_SKIP_VERSION_CHECK`), so the splash makes no network request of its own.
+   - **`quietStartup` is honoured, not scraped**: pi's own setting (`false` / `"header"` / `true`) is read through `readQuietStartup()` from the effective settings, mirroring pi's two predicates — the header is hidden only by `true` (the splash hands `setHeader(undefined)` back to pi, so its silence stands), and the startup *details* are shown only by `false`. Under `"header"` the splash draws the logo and version with no sections.
+   - **The model scope comes from `ctx.scopedModels`** — the same set `/scoped-models` lists, formatted as pi's own `Model scope:` line does (`id`, plus `:thinkingLevel`) — and appears as a `[Models]` section when details are allowed. It used to be scraped: a `console.log` patch watched for pi printing that line (and swallowed it), and pi's resource components were intercepted out of its container and re-rendered here. Both patches are gone, so pi renders its own listing and the console is nobody's data source.
+   - **Screen mode** (ADR 0027): the animation drives the renderer handed to the header factory and runs on either screen — the capability gate that used to suppress it on fullscreen screen went away with the scrollback-native listing it was guarding. What still differs per screen is height: regular screen sizes the header to the terminal it scrolls through, a frame-bounded screen gets `CONTENT_ONLY_HEIGHT` (its own content) so the editor keeps the rest of the viewport.
+   - **A finished splash caches its lines** so the text layout does not re-run on every repaint, and it honours `Component.invalidate()` — the hook pi calls on the whole tree whenever the theme changes — by dropping that cache. The cache key is the width and height it was drawn at, which a theme switch does not change.
 
 ## Settings Namespace
 

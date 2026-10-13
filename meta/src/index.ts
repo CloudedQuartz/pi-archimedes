@@ -4,7 +4,7 @@ import { time as archTime, print as archPrintTimings, reset as archResetTimings 
 import { diag, describeError } from "@pi-archimedes/core/log";
 import { takePiSupportNotice } from "@pi-archimedes/core/pi-support";
 import { registerCore } from "@pi-archimedes/core";
-import { registerUI, unpatchConsoleLog } from "@pi-archimedes/ui";
+import { registerUI } from "@pi-archimedes/ui";
 import { registerFooter } from "@pi-archimedes/footer";
 
 // Mark when module finishes evaluating (before factory runs) for gap analysis
@@ -83,7 +83,6 @@ export default function (pi: ExtensionAPI): void {
     // re-execute a stale ref.
     imagePasteShutdown?.();
     imagePasteShutdown = undefined;
-    unpatchConsoleLog();
     archPrintTimings();
   });
 

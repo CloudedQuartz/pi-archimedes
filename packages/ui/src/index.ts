@@ -11,13 +11,22 @@ import type {
 } from "@earendil-works/pi-tui";
 
 import { HephaestusEditor } from "./editor/index.js";
-import { renderHeader, patchStartupListing, settleHeader, CONTENT_ONLY_HEIGHT, type ListingRef } from "./startup/index.js";
-import { patchConsoleLog, unpatchConsoleLog } from "./startup/capture.js";
+import {
+  renderHeader,
+  patchStartupListing,
+  revealStartupListing,
+  stopStartupListing,
+  modelScopeSection,
+  CONTENT_ONLY_HEIGHT,
+  type ListingRef,
+} from "./startup/index.js";
+import type { ParsedSection } from "./startup/sections.js";
 import { patchThinkingRenderer } from "./thinking/patch.js";
 import { transformThinkingContent } from "./thinking/transform.js";
 import {
   loadUIConfig,
   saveUIConfig,
+  readQuietStartup,
   DEFAULT_UI_CONFIG,
   ANIMATION_STYLES,
   normalizeThinkingStyle,
@@ -33,7 +42,6 @@ import { registerBashToolOverride, clearActiveBashIntervals } from "./bash/index
 import { registerCodemodeToolOverride, clearActiveCodemodeIntervals } from "./codemode/index.js";
 
 // Re-exports
-export { unpatchConsoleLog } from "./startup/capture.js";
 export { getUISettingsItems } from "./settings.js";
 export {
   loadUIConfig,
@@ -53,10 +61,6 @@ export {
 // Module-level state for session lifecycle
 let uiRef: ListingRef | undefined;
 let uiCtx: ExtensionContext | undefined;
-// Stored renderer — the one ADR 0027 forbids, and the one entry in the
-// guard's allow-list. It exists only for the shutdown un-patch below and goes
-// away with that patch in Task 8.
-let uiTui: TUI | undefined;
 
 let spinFlag = false;
 let spinInterval: ReturnType<typeof setInterval> | undefined;
@@ -84,9 +88,6 @@ export function registerUI(pi: ExtensionAPI): void {
   // previous version left on the shared prototype (upgrade + /reload case).
   migrateRemovedToolPatch();
 
-  // Patch pi's startup stdout for model scope capture
-  patchConsoleLog();
-
   pi.on("message_end", (event, _ctx) => {
     if (loadUIConfig().codeUnindent) {
       transformThinkingContent(event.message as any);
@@ -95,7 +96,6 @@ export function registerUI(pi: ExtensionAPI): void {
 
   // session_shutdown handler (top-level to prevent accumulation on /reload)
   pi.on("session_shutdown", (_event, ctx) => {
-    unpatchConsoleLog();
     clearActiveBashIntervals();
     clearActiveCodemodeIntervals();
 
@@ -107,54 +107,13 @@ export function registerUI(pi: ExtensionAPI): void {
     clearSpinInterval();
     spinFlag = false;
 
+    // The splash: stop the frame/reveal timers, then freeze the ref so a late
+    // render of a header still on screen cannot restart the animation. Nothing
+    // else to undo — the startup listing interception and the console.log patch
+    // this used to un-install are gone (pi 1.x alignment, Task 8).
+    stopStartupListing();
     if (uiRef) {
       uiRef.settled = true;
-    }
-
-    const PATCHED_LISTING = Symbol.for("splashscreen:listingPatched");
-    const ORIG_ADD_CHILD = Symbol.for("splashscreen:origAddChild");
-    if (uiTui) {
-      try {
-        for (const child of uiTui.children) {
-          const cc = child as any;
-          if (cc[PATCHED_LISTING] && cc[ORIG_ADD_CHILD]) {
-            cc.addChild = cc[ORIG_ADD_CHILD];
-            cc[PATCHED_LISTING] = false;
-            cc[ORIG_ADD_CHILD] = undefined;
-          }
-        }
-        for (const topChild of uiTui.children) {
-          const tc = topChild as any;
-          if (!tc.children) continue;
-          for (const child of tc.children) {
-            const cc = child as any;
-            if (cc[PATCHED_LISTING] && cc[ORIG_ADD_CHILD]) {
-              cc.addChild = cc[ORIG_ADD_CHILD];
-              cc[PATCHED_LISTING] = false;
-              cc[ORIG_ADD_CHILD] = undefined;
-            }
-          }
-        }
-
-        const ANIM_INTERVAL = Symbol.for("splashscreen:animInterval");
-        const DEBOUNCE_TIMER = Symbol.for("splashscreen:debounceTimer");
-        for (const child of uiTui.children) {
-          const cc = child as any;
-          if (cc[ANIM_INTERVAL]) clearInterval(cc[ANIM_INTERVAL]);
-          if (cc[DEBOUNCE_TIMER]) clearTimeout(cc[DEBOUNCE_TIMER]);
-        }
-        for (const topChild of uiTui.children) {
-          const tc = topChild as any;
-          if (!tc.children) continue;
-          for (const child of tc.children) {
-            const cc = child as any;
-            if (cc[ANIM_INTERVAL]) clearInterval(cc[ANIM_INTERVAL]);
-            if (cc[DEBOUNCE_TIMER]) clearTimeout(cc[DEBOUNCE_TIMER]);
-          }
-        }
-      } catch {
-        /* TUI structure may have changed — ignore */
-      }
     }
   });
 
@@ -187,49 +146,88 @@ export function registerUI(pi: ExtensionAPI): void {
     if (ctx.hasUI) {
       spinFlag = config.editorSpinBorder;
 
-      // Set animated header
-      uiRef = {
-        sections: [],
-        frame: 0,
-        revealed: false,
-        revealedAt: 0,
-        scaffoldAt: 0,
-        settled: false,
-      };
-      const ref = uiRef;
-      const headerFactory = (tui: TUI, theme: Theme): Component & { dispose?(): void } => {
-        uiTui = tui;
-        // The splash animation and the startup resource listing both append
-        // into terminal scrollback, which fullscreen screen does not have —
-        // so they install on regular screen only (ADR 0027). The question is
-        // asked of the renderer we were just handed, every call: screen mode
-        // is mutable mid-session (`switchTuiMode()` rebuilds the TUI and
-        // re-invokes this factory), so caching the answer would keep the old
-        // screen's policy. Header replacement itself stays on every screen.
-        const caps = screenCapabilities(screenMode(tui));
-        const comp: Component & { dispose?(): void } = {
-          invalidate(): void {},
-          render(width: number): string[] {
-            // Regular screen: sized to the terminal the splash scrolls
-            // through. Frame-bounded screen: the viewport owns the height, so
-            // the header gets its content and nothing more — padded to the
-            // terminal it would be the whole viewport, editor excluded.
-            const height = caps.frameBounded ? CONTENT_ONLY_HEIGHT : tui.terminal.rows - 3;
-            return renderHeader(theme, ref, width, height);
-          },
+      // pi 1.x owns the startup screen. `quietStartup` says how much of it is
+      // shown — `false` header + details, `"header"` the header alone, `true`
+      // nothing — and `ctx.scopedModels` is the model scope pi would otherwise
+      // have printed, so nothing here scrapes pi's stdout or its component tree
+      // any more (that was `startup/capture.ts` plus the `addChild`
+      // interception in `patchStartupListing`, both removed here).
+      const quietStartup = readQuietStartup(pi);
+
+      if (quietStartup === true) {
+        // pi's own header is an empty component in this mode. Handing ours back
+        // is what keeps that silence: a splash left installed from an earlier
+        // session in the same process (`/reload` after a settings change) would
+        // otherwise animate over it.
+        ctx.ui.setHeader(undefined);
+        uiRef = undefined;
+      } else {
+        // What the splash reveals after the logo. The version row belongs to
+        // the header itself; the model scope is a startup *detail*, so it
+        // follows pi's own rule for the `Model scope:` line and the resource
+        // listing: visible only when `quietStartup` is `false`.
+        const sections: ParsedSection[] = [];
+        const models = quietStartup === false ? modelScopeSection(ctx.scopedModels) : undefined;
+        if (models) sections.push(models);
+
+        // Set animated header
+        uiRef = {
+          sections: [],
+          frame: 0,
+          revealed: false,
+          revealedAt: 0,
+          scaffoldAt: 0,
+          settled: false,
         };
-        if (caps.transcriptWrite) {
-          patchStartupListing(tui, theme, ref);
-        } else {
-          // Suppressing the splash is not the same as leaving it mid-flight:
-          // nothing here advances the ref, so start it where an animation
-          // would have left it rather than at frame 0 (an invisible logo on a
-          // truecolor terminal, no version rows, forever).
-          settleHeader(ref);
-        }
-        return comp;
-      };
-      ctx.ui.setHeader(headerFactory);
+        const ref = uiRef;
+        const headerFactory = (tui: TUI, theme: Theme): Component & { dispose(): void } => {
+          // Screen mode is asked of the renderer we were just handed, never
+          // cached in a module or a field (ADR 0027). Be exact about what that
+          // buys: pi calls this factory again whenever the header is replaced —
+          // a new session, `/reload` (which goes through `resetExtensionUI()`),
+          // or any `setHeader()`. It does *not* call it for a `tuiMode` switch:
+          // `switchTuiMode()` stops the old TUI, builds a new one and re-mounts
+          // the components it already has, and `customHeader` is only ever
+          // assigned in `setExtensionHeader()`. So the sizing decided here is
+          // the sizing that header keeps until the next replacement.
+          const caps = screenCapabilities(screenMode(tui));
+          const comp: Component & { dispose(): void } = {
+            // pi invalidates the component tree on every theme change
+            // (`onThemeChange()` → `ui.invalidate()`) and from the theme file
+            // watcher, and the splash's cached lines carry the theme's colours
+            // — so this is the hook that keeps a finished splash from rendering
+            // yesterday's palette for the rest of the session. The cache key is
+            // the size it was drawn at, which a theme switch leaves alone.
+            // Only the memo goes: this is a repaint, not an animation restart.
+            invalidate(): void {
+              delete ref.cachedLines;
+              delete ref.cachedWidth;
+              delete ref.cachedHeight;
+            },
+            render(width: number): string[] {
+              // Regular screen: sized to the terminal the splash scrolls
+              // through. Frame-bounded screen: the viewport owns the height, so
+              // the header gets its content and nothing more — padded to the
+              // terminal it would be the whole viewport, editor excluded.
+              const height = caps.frameBounded ? CONTENT_ONLY_HEIGHT : tui.terminal.rows - 3;
+              return renderHeader(theme, ref, width, height);
+            },
+            // pi disposes the header it is replacing before it builds the next
+            // one (`setExtensionHeader()` disposes, then calls the factory), so
+            // this is where the splash's timers die on a `setHeader()`
+            // replacement or a session restart — no stored renderer needed. A
+            // `tuiMode` switch does not dispose: it re-mounts this same
+            // component, whose timers then run until they settle themselves.
+            dispose(): void {
+              stopStartupListing();
+            },
+          };
+          patchStartupListing(tui, ref);
+          revealStartupListing(tui, ref, sections);
+          return comp;
+        };
+        ctx.ui.setHeader(headerFactory);
+      }
 
       clearSpinInterval();
       ctx.ui.setWorkingVisible(!spinFlag);
@@ -239,6 +237,12 @@ export function registerUI(pi: ExtensionAPI): void {
         // it runs on either screen. The renderer is handed straight to the
         // editor and never kept by us, and idleness is read from `ctx` rather
         // than from the renderer, so a screen-mode switch cannot strand it.
+        //
+        // `ctx.isIdle()` is false from `before_agent_start` onward — i.e. from
+        // the moment a run begins, not from the first token — which is exactly
+        // the *Busy episode* boundary in `CONTEXT.md` (idle → working → idle),
+        // so the spinner starting on the run's first tick is the behaviour the
+        // term defines, not an early start.
         ctx.ui.setEditorComponent(
           (tui: TUI, editorTheme: EditorTheme, keybindings: KeybindingsManager) => {
             const theme = ctx.ui.theme;

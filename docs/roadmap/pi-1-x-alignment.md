@@ -211,7 +211,7 @@ The `\w*tui\w*` widening is not pedantry: `packages/ui/src/index.ts:58` declares
 - [ ] `screenMode()` is the only place `isViewportTUI` is called in the suite.
 - [ ] Splash and startup listing appear on regular screen and are absent on fullscreen screen, with no warning in either.
 - [ ] On fullscreen screen the retained header is *finished*, not frozen: the logo at `LOGO_SETTLE_FRAME`, no listing, and no padding to terminal height. Assert it through the real `renderHeader`, not a stub — a stubbed header cannot see a frozen animation.
-- [ ] Guard test present and walking a non-empty file set, with an allow-list that contains **only** the entries Task 8 removes — today that is the single `let uiTui` in `packages/ui/src/index.ts`, which Task 8 deletes along with the startup `addChild` patch it exists to un-patch. (An empty allow-list was never reachable inside Task 3: the stored renderer it exempts is out of scope until Task 8.)
+- [ ] Guard test present and walking a non-empty file set, with an allow-list that contains **only** the entries Task 8 removes. (An empty allow-list was never reachable inside Task 3: the stored renderer it exempts is out of scope until Task 8.) **Amended when Task 8 landed:** the allow-list is now **empty** — `let uiTui` in `packages/ui/src/index.ts` and the startup `addChild` un-patch that read it were deleted together, so `screen-mode-discipline.test.ts` exempts nothing and its `keeps the allow-list as small as the work that removes it` test asserts that emptiness. The widened patterns stay, because the shape they were widened for is still the shape to catch.
 - [ ] `sections.ts` no longer asserts a fixed section list.
 
 ---

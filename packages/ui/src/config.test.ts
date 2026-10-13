@@ -3,11 +3,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@pi-archimedes/core/settings-io", () => ({
   loadConfig: vi.fn(),
   saveConfig: vi.fn(),
+  readEffectiveSettings: vi.fn(),
 }));
 
 import {
   loadUIConfig,
   saveUIConfig,
+  readQuietStartup,
   DEFAULT_UI_CONFIG,
   ANIMATION_STYLES,
   THINKING_STYLE_VALUES,
@@ -17,7 +19,7 @@ import {
   normalizeToolStyle,
   SPIN_SPEED_MULT,
 } from "./config.js";
-import { loadConfig, saveConfig } from "@pi-archimedes/core/settings-io";
+import { loadConfig, saveConfig, readEffectiveSettings } from "@pi-archimedes/core/settings-io";
 
 describe("loadUIConfig", () => {
   beforeEach(() => {
@@ -197,5 +199,44 @@ describe("normalizeToolStyle", () => {
     expect(normalizeToolStyle("")).toBe("Minimal");
     expect(normalizeToolStyle(123)).toBe("Minimal");
     expect(normalizeToolStyle(true)).toBe("Minimal");
+  });
+});
+
+// ── readQuietStartup ─────────────────────────────────────────────────
+//
+// pi 1.x's `quietStartup` is what decides how much of the startup screen the
+// splash may draw: `false` = header + details, `"header"` = header alone,
+// `true` = nothing. These are pi's own semantics, mirrored — a value that is
+// not one of the three (including an absent key, whose pi default is `false`)
+// reads as `false`.
+
+describe("readQuietStartup", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const answering = (settings: unknown) => {
+    vi.mocked(readEffectiveSettings).mockReturnValue(settings as Record<string, unknown>);
+    return readQuietStartup({});
+  };
+
+  it("reads each of the three values pi accepts", () => {
+    expect(answering({ quietStartup: false })).toBe(false);
+    expect(answering({ quietStartup: true })).toBe(true);
+    expect(answering({ quietStartup: "header" })).toBe("header");
+  });
+
+  it("reads false when the key is absent or unusable", () => {
+    expect(answering({})).toBe(false);
+    expect(answering({ quietStartup: "false" })).toBe(false);
+    expect(answering({ quietStartup: 0 })).toBe(false);
+    expect(answering({ quietStartup: null })).toBe(false);
+  });
+
+  it("passes the pi handle through — getSettings() lives on ExtensionAPI, not the context", () => {
+    const pi = {};
+    vi.mocked(readEffectiveSettings).mockReturnValue({});
+    readQuietStartup(pi);
+    expect(readEffectiveSettings).toHaveBeenCalledWith(pi);
   });
 });

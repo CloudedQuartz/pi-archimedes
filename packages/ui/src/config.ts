@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig } from "@pi-archimedes/core/settings-io";
+import { loadConfig, saveConfig, readEffectiveSettings } from "@pi-archimedes/core/settings-io";
 
 export const ANIMATION_STYLES = [
   "diagonal",
@@ -128,4 +128,26 @@ export function loadUIConfig(): UIConfig {
 
 export function saveUIConfig(config: UIConfig): void {
   saveConfig(NAMESPACE, config);
+}
+
+/**
+ * pi's own `quietStartup`, normalised to the three answers pi acts on.
+ *
+ * pi's semantics (`shouldShowStartupHeader()` / `shouldShowStartupDetails()` in
+ * its interactive mode): the startup header is hidden only by `true`; the
+ * startup *details* — the `Model scope:` line and the loaded-resource listing —
+ * are shown only by `false`. `"header"` is the middle case: keep the header,
+ * drop the details. Anything else, including an absent key (pi's default is
+ * `false`), reads as `false`.
+ *
+ * Read through `readEffectiveSettings`, so a project-scoped `quietStartup` and
+ * any in-process override count — the same object pi applies. One input is out
+ * of reach: pi's verbose-startup CLI flag overrides the setting for pi's own
+ * rendering and is not exposed to extensions, so on such a run the splash is
+ * quieter than pi's output. Taking the `pi` handle (not `ctx`) is required —
+ * `getSettings()` lives on `ExtensionAPI`.
+ */
+export function readQuietStartup(pi: unknown): boolean | "header" {
+  const value = (readEffectiveSettings(pi) as { quietStartup?: unknown }).quietStartup;
+  return value === true ? true : value === "header" ? "header" : false;
 }

@@ -2,7 +2,7 @@
 
 **Step away without losing track.**
 
-Leave the terminal for a coffee. When the work has actually settled — or something needs your decision — notify tells you, once, after a short delay. Type anything and the pending alert is cancelled; there's no inactivity scrutiny, no focus tracking. Keystrokes are the only signal.
+Leave the terminal for a coffee. When the work has actually settled — or something needs your decision — notify tells you, once, after a short delay. Press a key and the pending alert is cancelled; there's no inactivity scrutiny, no focus tracking. Keystrokes are the only signal — a terminal answering Pi's own questions (colour palette, device attributes, cell size) is not one.
 
 ## Install
 
@@ -31,7 +31,7 @@ After installing Pi, choose one installation command above, then `cd` into your 
 - **Settled runs** — on Pi's `agent_settled` event: the run has fully settled (no automatic retry, compaction, or queued continuation still to fire), not merely "a turn ended".
 - **Blocking prompts** — on `ui_prompt_start`: any extension prompt is waiting on you (a tabbed ask, a sudo password or command-confirm prompt) — direct **or** subagent-relayed, since the event fires in the parent process.
 
-The alert fires after a fixed `delayMs` (30 s by default) from the trigger. It is a delay, not an idle timer: nothing measures how long you've been reading. Any input in the terminal cancels pending alerts immediately, a new agent run cancels them, and a prompt that closes without you typing (say, a confirm dialog that times out and auto-declines) cancels its own timer — so a long-gone question can't ring.
+The alert fires after a fixed `delayMs` (30 s by default) from the trigger. It is a delay, not an idle timer: nothing measures how long you've been reading. A keystroke in the terminal cancels a pending alert immediately — and only a keystroke: pi-tui's decoder decides, so protocol traffic that reaches the listener (a device-attributes reply, a cell-size report, focus and mouse sequences) cannot silently swallow an alert nobody dismissed. Anything you actually typed counts, including the characters the decoder has no name for — an accented key or an IME commit on a terminal that doesn't speak the Kitty keyboard protocol. A new agent run cancels pending alerts, whichever kind of run start it was, and a prompt that closes without you typing (say, a confirm dialog that times out and auto-declines) cancels its own timer — so a long-gone question can't ring.
 
 ## Terminal delivery
 

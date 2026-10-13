@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SettingItem } from "@earendil-works/pi-tui";
+import { parseKey } from "@earendil-works/pi-tui";
 import { loadConfig, saveConfig } from "@pi-archimedes/core/settings-io";
 import { execFile } from "node:child_process";
 
@@ -38,6 +39,58 @@ export function saveNotifyConfig(config: NotifyConfig): void {
 }
 
 // ── Terminal detection helpers ──────────────────────────────────────────────
+
+/**
+ * Did the user press a key, or is this the terminal answering a question?
+ *
+ * pi-tui decodes input for us, and the decode is the test: `parseKey()` returns
+ * a key id for a keystroke (legacy byte, escape sequence, Kitty CSI-u press,
+ * repeat **or** release) and `undefined` for everything else. Cancel on the
+ * keystrokes only.
+ *
+ * The rule used to be "any byte that reaches the listener", which pi 1.x makes
+ * wrong, because far more protocol traffic goes through the terminal now and
+ * `TuiBase.handleTerminalInput()` (pi-tui `dist/tui.js:687-712`) forwards some
+ * of it to extension listeners and swallows the rest:
+ *
+ * - The colour-scheme report is consumed before listeners, unconditionally. The
+ *   OSC 10/11/4 colour replies go through the same pending-query branch as the
+ *   device-attributes reply below, so during pi's palette query — at startup and
+ *   on every theme switch, when that branch is armed — they are swallowed there;
+ *   a reply that turns up with no query outstanding is forwarded like any other
+ *   byte.
+ * - A primary-device-attributes reply (`ESC [ ? … c`) is swallowed only while a
+ *   colour query is pending (`tui.js`, `pendingTerminalColorQueries`), so a
+ *   late or unsolicited one — the shape is `\x1b[?62;1;9c` — **is** forwarded.
+ * - A cell-size report (`ESC [ 6 ; height ; width t`) is consumed only *after*
+ *   listeners, so it always reaches them.
+ * - Focus in/out, mouse reporting, bracketed-paste markers and the Kitty
+ *   protocol query reply reach listeners too, and none of them is typing.
+ *
+ * So a reply used to be able to cancel an alert nobody asked for. A mouse event
+ * no longer counts either — notify's contract is keystrokes (see README), and
+ * `parseKey()` is what says whether one happened.
+ *
+ * The decoder is the test, but not the whole test: it names ASCII bytes and
+ * escape sequences, and nothing else. A character outside ASCII is delivered as
+ * itself — `é` is the two bytes C3 A9 on every terminal that did not take the
+ * Kitty keyboard protocol (Terminal.app, VTE/GNOME Terminal, xterm, tmux) — and
+ * `parseKey()` returns `undefined` for it. Treating that as "not a keystroke"
+ * would fire an alert at someone standing at the keyboard typing an accented
+ * letter, which is the failure this handler exists to prevent, so a printable
+ * character with no control byte in it counts as typing too. The test stays
+ * narrow on purpose: the `é`-shaped answer cannot mistake protocol traffic for
+ * a key press, because every reply pi-tui forwards opens with `ESC`, and the
+ * only other printable bytes a listener can see are the *tail* of a reply split
+ * across two reads (`62;1;9c`) — printable ASCII, still no key press.
+ */
+const TYPED_NON_ASCII = /[\u00a0-\uffff]/;
+const CONTROL_BYTE = /[\u0000-\u001f\u007f-\u009f]/;
+
+function isKeystroke(data: string): boolean {
+  if (parseKey(data) !== undefined) return true;
+  return TYPED_NON_ASCII.test(data) && !CONTROL_BYTE.test(data);
+}
 
 /** Wrap an OSC sequence for tmux passthrough. */
 export function wrapForTmux(sequence: string): string {
@@ -189,6 +242,13 @@ export function registerNotify(pi: ExtensionAPI): void {
   // parent process for direct and subagent-relayed prompts alike.
   pi.on("ui_prompt_start", (_event) => scheduleNotify(TRIGGER.UI_PROMPT));
   pi.on("input", () => cancelPending());
+  // Any run that *starts* makes a pending alert stale, so this handler takes no
+  // filter. pi 1.2.0 made `before_agent_start` a union on `messageType` —
+  // `"user"` for a submitted prompt, RPC prompt or `pi.sendUserMessage()`, and
+  // `"custom"` for `pi.sendMessage(…, { triggerTurn: true })` fired while idle,
+  // which is new traffic that fires it too — and both members mean the same
+  // thing here: work is beginning, so "Task complete — waiting for input" is
+  // now a lie, whoever caused the run. Same reason `agent_start` cancels.
   pi.on("before_agent_start", () => cancelPending());
   pi.on("agent_start", () => cancelPending());
   // A prompt that closes without terminal input (e.g. a ctx.ui.confirm
@@ -201,11 +261,14 @@ export function registerNotify(pi: ExtensionAPI): void {
     }
   });
 
-  // Listen for raw terminal keystrokes — cancel on any key press
+  // Listen for raw terminal keystrokes — cancel on any key press, and only on
+  // one: terminal protocol traffic is not a keystroke (see `isKeystroke`).
   let unsubTerminalInput: (() => void) | null = null;
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
-    unsubTerminalInput = ctx.ui.onTerminalInput((_data) => {
-      cancelPending();
+    unsubTerminalInput = ctx.ui.onTerminalInput((data) => {
+      if (isKeystroke(data)) {
+        cancelPending();
+      }
     });
   });
 

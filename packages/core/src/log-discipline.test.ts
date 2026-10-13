@@ -46,11 +46,6 @@ const ALLOW_LIST: readonly AllowEntry[] = [
     reason:
       "The diagnostics sink itself. Exempt by construction: it is the one module allowed to own output plumbing, and a last-resort fallback there must not trip the guard. It writes files, never the console.",
   },
-  {
-    file: "packages/ui/src/startup/capture.ts",
-    reason:
-      "The console.log monkey patch that scrapes pi's `Model scope:` line — patching the console is its whole job, and Task 8 deletes the file in favour of ctx.scopedModels.",
-  },
 ];
 
 // ── Walking the tree ────────────────────────────────────────────────────────
@@ -119,7 +114,7 @@ describe("console discipline: no console writes from render or event paths", () 
     // The trees the guard covers, and the shape of what it skips.
     for (const expected of [
       "packages/core/src/log.ts",
-      "packages/ui/src/startup/capture.ts",
+      "packages/ui/src/startup/index.ts",
       "meta/src/index.ts",
     ]) {
       expect(FILES).toContain(expected);
@@ -156,8 +151,8 @@ describe("console discipline: no console writes from render or event paths", () 
 
     // Assignments, type references and prose about the console are not writes.
     // This is exactly the difference between the guard and the census grep, and
-    // it is why `capture.ts` needs an allow-list entry for its one real write
-    // while its patch plumbing does not count.
+    // it is why the startup console patch this file used to exempt needed one
+    // entry for its single real write while its patch plumbing did not count.
     const fine = [
       "console.log = (...args) => {};",
       "let _origLog: typeof console.log | undefined;",
@@ -181,12 +176,12 @@ describe("console discipline: no console writes from render or event paths", () 
       if (entry.file !== sink) expect(entry.reason).toMatch(/Task \d+/);
     }
 
-    // The capture.ts entry is load-bearing today: it has a real write. The sink
-    // entry is exempt by construction, and if it ever does grow a console
-    // write, that must be a deliberate choice someone argues about, not a
-    // silent widening — so pin which entries are currently exercised.
+    // Nothing outside the sink has a console write to excuse: the one file that
+    // did (the startup `console.log` scrape) is gone, so the sink entry is
+    // exempt by construction alone. Pin that, or the list grows a member nobody
+    // remembers granting.
     const exercised = new Set(HITS.map((h) => h.file));
-    expect(exercised.has("packages/ui/src/startup/capture.ts")).toBe(true);
+    expect([...exercised]).toEqual([]);
     expect(exercised.has(sink)).toBe(false);
   });
 });

@@ -58,7 +58,6 @@ vi.mock("@pi-archimedes/ui", () => ({
   loadUIConfig: vi.fn(() => ({})),
   saveUIConfig: vi.fn(),
   registerUI: vi.fn(),
-  unpatchConsoleLog: vi.fn(),
 }));
 
 vi.mock("@pi-archimedes/footer/config", () => ({

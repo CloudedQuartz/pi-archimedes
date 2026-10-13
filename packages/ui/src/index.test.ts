@@ -9,26 +9,25 @@ import type { TUI, EditorTheme, Component } from "@earendil-works/pi-tui";
 
 // ── Mock modules ─────────────────────────────────────────────────────────────
 
-vi.mock("@pi-archimedes/core/settings-io", () => ({
-  loadConfig: vi.fn(),
-  saveConfig: vi.fn(),
-  removeConfig: vi.fn(),
-}));
+// Real `readEffectiveSettings`, so the harness's `pi.getSettings()` is what the
+// splash's `quietStartup` read actually goes through; the namespace helpers are
+// stubbed because every other settings read in these tests is about `ui`'s own
+// config.
+vi.mock("@pi-archimedes/core/settings-io", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@pi-archimedes/core/settings-io")>();
+  return {
+    ...actual,
+    loadConfig: vi.fn(),
+    saveConfig: vi.fn(),
+    removeConfig: vi.fn(),
+  };
+});
 
 vi.mock("./config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./config.js")>();
   return {
     ...actual,
     loadUIConfig: vi.fn(),
-  };
-});
-
-vi.mock("./startup/capture.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./startup/capture.js")>();
-  return {
-    ...actual,
-    patchConsoleLog: vi.fn(),
-    unpatchConsoleLog: vi.fn(),
   };
 });
 
@@ -46,6 +45,8 @@ vi.mock("./startup/index.js", async (importOriginal) => {
     ...actual,
     renderHeader: vi.fn(() => ["header line"]),
     patchStartupListing: vi.fn(),
+    revealStartupListing: vi.fn(),
+    stopStartupListing: vi.fn(),
   };
 });
 
@@ -68,20 +69,23 @@ vi.mock("./codemode/index.js", () => ({
 
 import defaultExport, {
   registerUI,
-  unpatchConsoleLog,
   getUISettingsItems,
   loadUIConfig,
   saveUIConfig,
   DEFAULT_UI_CONFIG,
   ANIMATION_STYLES,
 } from "./index.js";
-import { patchConsoleLog } from "./startup/capture.js";
 import { migrateCoreToUIConfig } from "./migration.js";
 import { registerBashToolOverride, clearActiveBashIntervals } from "./bash/index.js";
 import { registerCodemodeToolOverride, clearActiveCodemodeIntervals } from "./codemode/index.js";
 import { patchThinkingRenderer } from "./thinking/patch.js";
 import { transformThinkingContent } from "./thinking/transform.js";
-import { renderHeader, patchStartupListing } from "./startup/index.js";
+import {
+  renderHeader,
+  patchStartupListing,
+  revealStartupListing,
+  stopStartupListing,
+} from "./startup/index.js";
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -105,15 +109,15 @@ function makeCtx(hasUI = true): { ctx: ExtensionContext; ui: UiSpies } {
     ui: { ...ui, theme: {} as Theme },
     isIdle: vi.fn(() => true),
     shutdown: vi.fn(),
+    scopedModels: [],
   } as unknown as ExtensionContext;
   return { ctx, ui };
 }
 
-function setupHarness(): {
+/** A `pi` handle whose `getSettings()` answers what pi would apply. */
+function makePi(settings: Record<string, unknown> = {}): {
   pi: ExtensionAPI;
-  triggerStart: (ctx: ExtensionContext) => void;
-  triggerShutdown: (ctx: ExtensionContext) => void;
-  triggerMessageEnd: (msg: unknown) => void;
+  listeners: Record<string, ((event: any, ctx: any) => void)[]>;
 } {
   const listeners: Record<string, ((event: any, ctx: any) => void)[]> = {};
   const pi = {
@@ -122,7 +126,20 @@ function setupHarness(): {
       listeners[event]!.push(handler);
     }),
     registerTool: vi.fn(),
+    getSettings: vi.fn(() => settings),
   } as unknown as ExtensionAPI;
+  return { pi, listeners };
+}
+
+function setupHarness(
+  settings: Record<string, unknown> = {},
+): {
+  pi: ExtensionAPI;
+  triggerStart: (ctx: ExtensionContext) => void;
+  triggerShutdown: (ctx: ExtensionContext) => void;
+  triggerMessageEnd: (msg: unknown) => void;
+} {
+  const { pi, listeners } = makePi(settings);
 
   registerUI(pi);
 
@@ -158,7 +175,6 @@ describe("packages/ui lifecycle and registration", () => {
 
   describe("exports", () => {
     it("re-exports expected functions and constants", () => {
-      expect(typeof unpatchConsoleLog).toBe("function");
       expect(typeof getUISettingsItems).toBe("function");
       expect(typeof loadUIConfig).toBe("function");
       expect(typeof saveUIConfig).toBe("function");
@@ -168,18 +184,19 @@ describe("packages/ui lifecycle and registration", () => {
     });
 
     it("default export delegates to registerUI", () => {
-      const pi = { on: vi.fn() } as unknown as ExtensionAPI;
+      const pi = { on: vi.fn(), getSettings: vi.fn(() => ({})) } as unknown as ExtensionAPI;
       defaultExport(pi);
       expect(migrateCoreToUIConfig).toHaveBeenCalled();
-      expect(patchConsoleLog).toHaveBeenCalled();
     });
   });
 
   describe("registerUI initialization", () => {
-    it("calls migrateCoreToUIConfig and patchConsoleLog", () => {
+    it("calls migrateCoreToUIConfig and leaves the console alone", () => {
       const { pi } = setupHarness();
       expect(migrateCoreToUIConfig).toHaveBeenCalledTimes(1);
-      expect(patchConsoleLog).toHaveBeenCalledTimes(1);
+      // Nobody may wrap console.log to watch pi's startup output: the scrape is
+      // gone, and a wrapped log both smears the frame and hides pi's own line.
+      expect(console.log.name).toBe("log");
       expect(pi.on).toHaveBeenCalledWith("session_shutdown", expect.any(Function));
       expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
     });
@@ -207,7 +224,7 @@ describe("packages/ui lifecycle and registration", () => {
       expect(typeof comp.render).toBe("function");
       comp.render(80);
       expect(renderHeader).toHaveBeenCalledWith(fakeTheme, expect.any(Object), 80, 21);
-      expect(patchStartupListing).toHaveBeenCalledWith(fakeTui, fakeTheme, expect.any(Object));
+      expect(patchStartupListing).toHaveBeenCalledWith(fakeTui, expect.any(Object));
 
       // Working visibility and Editor component
       expect(ui.setWorkingVisible).toHaveBeenCalledWith(false); // spinFlag is true by default
@@ -351,8 +368,84 @@ describe("packages/ui lifecycle and registration", () => {
     });
   });
 
+  describe("startup header: quietStartup and ctx.scopedModels", () => {
+    // pi 1.x owns the startup screen: `quietStartup` (`false` / `"header"` /
+    // `true`) decides what is shown, and `ctx.scopedModels` is the session's
+    // model scope — the same set `/scoped-models` lists. Both are read, neither
+    // is scraped any more.
+    const scopedModels = [
+      { model: { id: "claude-sonnet-4-5" } },
+      { model: { id: "gpt-5" }, thinkingLevel: "high" },
+    ];
+    let fetchSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      fetchSpy = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as never);
+      vi.stubGlobal("fetch", fetchSpy);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    /** Register, start a session and invoke the header factory pi was given. */
+    function startHeader(settings: Record<string, unknown>, models: unknown[] = scopedModels) {
+      const { triggerStart } = setupHarness(settings);
+      const { ctx, ui } = makeCtx(true);
+      (ctx as unknown as { scopedModels: unknown[] }).scopedModels = models;
+
+      triggerStart(ctx);
+      const headerFactory = ui.setHeader.mock.calls[0]![0];
+      const tui = { terminal: { rows: 24 }, requestRender: vi.fn() } as unknown as TUI;
+      headerFactory(tui, {} as Theme);
+      return { ui, tui };
+    }
+
+    it("reveals the model scope from ctx.scopedModels with console.log untouched", () => {
+      const { tui } = startHeader({});
+
+      expect(revealStartupListing).toHaveBeenCalledTimes(1);
+      expect(revealStartupListing).toHaveBeenCalledWith(tui, expect.any(Object), [
+        { name: "Models", items: ["claude-sonnet-4-5", "gpt-5:high"] },
+      ]);
+      expect(console.log.name).toBe("log");
+    });
+
+    it('quietStartup: "header" keeps the splash and drops the model scope', () => {
+      startHeader({ quietStartup: "header" });
+
+      // The header is ours (the splash stays), but the details half is not.
+      expect(revealStartupListing).toHaveBeenCalledTimes(1);
+      expect(revealStartupListing).toHaveBeenCalledWith(expect.anything(), expect.any(Object), []);
+    });
+
+    it("quietStartup: true hands the header back to pi and starts no splash", () => {
+      const { triggerStart } = setupHarness({ quietStartup: true });
+      const { ctx, ui } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      // pi replaces its own header with an empty component for a quiet start;
+      // restoring ours is what leaves that silence in place.
+      expect(ui.setHeader).toHaveBeenCalledWith(undefined);
+      expect(patchStartupListing).not.toHaveBeenCalled();
+      expect(revealStartupListing).not.toHaveBeenCalled();
+    });
+
+    it("reveals nothing but the version block when the session has no model scope", () => {
+      startHeader({}, []);
+
+      expect(revealStartupListing).toHaveBeenCalledWith(expect.anything(), expect.any(Object), []);
+    });
+
+    it("asks the network nothing at startup", () => {
+      startHeader({});
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
   describe("session_shutdown teardown", () => {
-    it("restores unpatchConsoleLog, workingVisible, and clears editor component", () => {
+    it("stops the splash, restores workingVisible, and clears editor component", () => {
       const { triggerStart, triggerShutdown } = setupHarness();
       const { ctx, ui } = makeCtx(true);
 
@@ -364,47 +457,56 @@ describe("packages/ui lifecycle and registration", () => {
       // Now trigger shutdown
       triggerShutdown(ctx);
 
-      expect(unpatchConsoleLog).toHaveBeenCalledTimes(1);
+      expect(stopStartupListing).toHaveBeenCalledTimes(1);
       expect(clearActiveBashIntervals).toHaveBeenCalledTimes(1);
       expect(clearActiveCodemodeIntervals).toHaveBeenCalledTimes(1);
       expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
       expect(ui.setEditorComponent).toHaveBeenLastCalledWith(undefined);
     });
 
-    it("cleans up patched TUI container children on shutdown", () => {
+    it("stops the splash when pi disposes the header (header replaced, session restart)", () => {
       const { triggerStart, triggerShutdown } = setupHarness();
       const { ctx, ui } = makeCtx(true);
 
       triggerStart(ctx);
-
       const headerFactory = ui.setHeader.mock.calls[0]![0];
-      const PATCHED_LISTING = Symbol.for("splashscreen:listingPatched");
-      const ORIG_ADD_CHILD = Symbol.for("splashscreen:origAddChild");
-      const ANIM_INTERVAL = Symbol.for("splashscreen:animInterval");
-      const DEBOUNCE_TIMER = Symbol.for("splashscreen:debounceTimer");
+      const comp = headerFactory({ terminal: { rows: 24 } } as TUI, {} as Theme);
 
-      const origAddChildFn = vi.fn();
-      const patchedChild = {
-        [PATCHED_LISTING]: true,
-        [ORIG_ADD_CHILD]: origAddChildFn,
-        [ANIM_INTERVAL]: setInterval(() => {}, 10000),
-        [DEBOUNCE_TIMER]: setTimeout(() => {}, 10000),
-        addChild: vi.fn(),
-      };
+      expect(typeof comp.dispose).toBe("function");
+      comp.dispose!();
+      expect(stopStartupListing).toHaveBeenCalledTimes(1);
 
-      const fakeTui = {
-        terminal: { rows: 24 },
-        children: [patchedChild],
-      } as unknown as TUI;
-
-      headerFactory(fakeTui, {} as Theme);
-
-      // Now trigger shutdown
       triggerShutdown(ctx);
+    });
+  });
 
-      expect(patchedChild.addChild).toBe(origAddChildFn);
-      expect(patchedChild[PATCHED_LISTING]).toBe(false);
-      expect(patchedChild[ORIG_ADD_CHILD]).toBeUndefined();
+  // The header component's own contract with pi, independent of lifecycle: pi
+  // tells a component to drop cached rendering state by calling
+  // `invalidate()` — `onThemeChange()` does it for the whole tree
+  // (`interactive-mode.js:792`), as does the theme file watcher — and the
+  // splash caches its finished lines, which carry the theme's colours.
+  describe("header component contract", () => {
+    it("drops the cached header lines when pi invalidates it (theme change)", () => {
+      const { triggerStart } = setupHarness();
+      const { ctx, ui } = makeCtx(true);
+
+      triggerStart(ctx);
+      const headerFactory = ui.setHeader.mock.calls[0]![0];
+      const comp = headerFactory({ terminal: { rows: 24 } } as TUI, {} as Theme);
+
+      comp.render(80);
+      const ref = vi.mocked(renderHeader).mock.calls.at(-1)![1] as {
+        settled: boolean;
+        cachedLines?: string[];
+      };
+      // The state a finished splash leaves behind (the mocked `renderHeader`
+      // does not fill it in, so the test does what the real one would).
+      ref.settled = true;
+      ref.cachedLines = ["\x1b[90mv1.2.0\x1b[0m"];
+
+      comp.invalidate();
+
+      expect(ref.cachedLines).toBeUndefined();
     });
   });
 });

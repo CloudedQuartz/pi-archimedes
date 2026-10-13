@@ -83,6 +83,19 @@ export class HephaestusEditor extends CustomEditor {
       onSpinInterval,
     }: {
       getTheme: () => Theme;
+      /**
+       * Whether the agent is idle right now — the only source of busy/idle
+       * state for the spinner and the quip. It is injected rather than read
+       * from a stored renderer so a screen-mode switch cannot strand it.
+       *
+       * pi 1.2.0 semantics, checked rather than assumed: `ctx.isIdle()` turns
+       * false at `before_agent_start`, i.e. when a run begins — including one
+       * an extension started with `pi.sendMessage(…, { triggerTurn: true })` —
+       * not when the first token arrives. That is the *Busy episode* boundary
+       * in `CONTEXT.md` (idle → working → idle), so the spinner starting on the
+       * run's first tick is what the term promises; there is no early-start
+       * bug to correct here.
+       */
       isIdle: () => boolean;
       shutdown: () => void;
       /** Type a 4-cell spinner window into the editor's top border while the agent is busy (the animation mechanism lives in `BorderTypeSpinner`, `./spin.js`): the style-configured 4-cell window (the gallery-derived styles in `SPIN_VARIANTS` — the 2×4 braille dot block (⠁ → ⣿, Unicode chart order, `typing`) grows cell-by-cell left→right — each cell walking the 8 stages in 2-step line pairs (⠁⠉/⠋⠛/⠟⠿/⡿⣿) — then holds, clears, repeats (in EAW terminals the stage set falls back to the width-1 shading ░ → █; raw setting strings are tolerated — unknown names normalize to typing frames). */

@@ -59,7 +59,7 @@ import { diag } from "@pi-archimedes/core/log";
 // NOTE: `@pi-archimedes/core/pi-support` is deliberately NOT mocked — the
 // registry and the spend-once semantics under test are its own.
 vi.mock("@pi-archimedes/core", () => ({ registerCore: vi.fn() }));
-vi.mock("@pi-archimedes/ui", () => ({ registerUI: vi.fn(), unpatchConsoleLog: vi.fn() }));
+vi.mock("@pi-archimedes/ui", () => ({ registerUI: vi.fn() }));
 vi.mock("@pi-archimedes/footer", () => ({ registerFooter: vi.fn() }));
 vi.mock("@pi-archimedes/todo", () => ({ registerTodo: vi.fn() }));
 vi.mock("@pi-archimedes/ask", () => ({ registerAsk: vi.fn() }));

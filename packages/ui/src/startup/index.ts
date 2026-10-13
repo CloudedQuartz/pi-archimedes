@@ -1,29 +1,28 @@
-import { VERSION, type Theme } from "@earendil-works/pi-coding-agent";
-import { getShinedLogo, TRUECOLOR, LOGO_PAD, LOGO_SETTLE_FRAME } from "./logo.js";
+import { VERSION, type ScopedModel, type Theme } from "@earendil-works/pi-coding-agent";
+import { getShinedLogo, LOGO_PAD, LOGO_SETTLE_FRAME } from "./logo.js";
 import { loadUIConfig } from "../config.js";
-import { detectSection, parseSectionText, parseModelScope, formatColumns, buildItemWrapper, type ParsedSection } from "./sections.js";
-import { fetchLatestVersion } from "./version.js";
-import { compareVersions } from "@pi-archimedes/core/pi-support";
-import { stripAnsi } from "@pi-archimedes/core/text";
-import { diag, describeError } from "@pi-archimedes/core/log";
-import { Text, Spacer, Container, type TUI, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import {
+  formatColumns,
+  RAMP_FRAMES,
+  MAX_STAGGER,
+  type ParsedSection,
+} from "./sections.js";
+import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 
-// Symbol keys (survive hot-reload)
-const LISTING_REF = Symbol.for("splashscreen:listingRef");
-const ANIM_INTERVAL = Symbol.for("splashscreen:animInterval");
-const DEBOUNCE_TIMER = Symbol.for("splashscreen:debounceTimer");
-const PATCHED_CLEAR = Symbol.for("splashscreen:clearPatched");
-const PATCHED_LISTING = Symbol.for("splashscreen:listingPatched");
-const ORIG_ADD_CHILD = Symbol.for("splashscreen:origAddChild");
-
-// Animation constants
-const MAX_RENDER_WIDTH = 9999;
-const MIN_HEADER_LINES = 11;
-const REVEAL_DEBOUNCE_MS = 150;
-const RAMP_FRAMES = 22;
-const STAGGER_FRAMES = 0;
-const BASE_FADE_DELAY = 3;
-const MAX_STAGGER = BASE_FADE_DELAY + 5 * STAGGER_FRAMES;
+// ── What this module owns ───────────────────────────────────────────────────
+//
+// The splash: the logo animation, the version row, and the text reveal that
+// carries them in. That is all.
+//
+// It used to own pi's startup listing too — finding pi's resource container by
+// child-order heuristics, intercepting `addChild`, swallowing pi's section
+// components and re-rendering them here, plus a `console.log` patch that ate
+// pi's `Model scope:` line. All of that is gone (pi 1.x alignment, Task 8): pi
+// renders its own listing, `quietStartup` decides whether it shows, and
+// `ctx.scopedModels` hands us the model scope directly, so there is nothing
+// left to scrape and no reason to touch the console or pi's component tree.
+// `ui/src/index.ts` decides *whether* to install this splash (quietStartup) and
+// what sections to reveal (the model scope); this module animates them.
 
 /**
  * Height to size the header against when there is no scrollback to pad into
@@ -42,19 +41,16 @@ export interface ListingRef {
   revealed: boolean;
   revealedAt: number;
   scaffoldAt: number;
-  latestVersion?: string;
   settled: boolean;
   cachedLines?: string[];
   cachedWidth?: number;
   cachedHeight?: number;
-  maxHeaderHeight?: number;
 }
 
 // ── renderHeader() — composes logo + sections + padding ────────────────
 
 export function renderHeader(theme: Theme, ref: ListingRef, width: number, height: number): string[] {
   const dim = (t: string) => theme.fg("dim", t);
-  const accent = (t: string) => theme.fg("accent", t);
   const cfg = loadUIConfig();
   const logoLines = getShinedLogo(ref.frame, cfg.animationStyle, cfg.colorfulLogo);
 
@@ -64,19 +60,20 @@ export function renderHeader(theme: Theme, ref: ListingRef, width: number, heigh
   if (ref.settled && ref.cachedLines && ref.cachedWidth === width && ref.cachedHeight === height) {
     listingLines = ref.cachedLines;
   } else {
-    const sectionsToRender: { name: string; items: string[] }[] = [];
+    const sectionsToRender: ParsedSection[] = [];
 
     if (!ref.revealed) {
       // Logo only — sections appear together on reveal
     } else {
-      const latest = ref.latestVersion ?? VERSION;
-      const hasUpdate = compareVersions(latest, VERSION) > 0;
-      const latestStr = hasUpdate ? `Latest: ${accent("v" + latest)}` : `Latest: v${latest}`;
-      sectionsToRender.push({ name: "Version", items: [`Local: v${VERSION}`, latestStr] });
+      // The version row is ours to state; pi owns its own update check
+      // (`--update`, `/changelog`, `PI_SKIP_VERSION_CHECK`), so there is no
+      // second `Latest:` here — that used to arrive from a registry fetch on
+      // every start.
+      sectionsToRender.push({ name: "Version", items: [`v${VERSION}`] });
 
-      // Render what was actually captured, in the order pi added it — pi
-      // chooses which sections exist, so there is no list here to keep in
-      // step. Empty sections are pi's "nothing loaded", skip them.
+      // Then whatever the caller revealed in. pi decides which of *its*
+      // sections exist; we only ever carry the model scope. Empty sections are
+      // "nothing loaded", skip them.
       for (const sec of ref.sections) {
         if (sec.items.length > 0) sectionsToRender.push(sec);
       }
@@ -135,136 +132,99 @@ export function renderHeader(theme: Theme, ref: ListingRef, width: number, heigh
   return result;
 }
 
-// ── Screen-mode entry point ──────────────────────────────────────────────
+// ── The section the splash is allowed to know about ───────────────────────
 
 /**
- * Put the listing ref into the state a finished splash leaves behind, without
- * animating it — for a screen that cannot run the splash at all.
+ * The session's model scope, in the shape the splash renders — the same set
+ * `ctx.scopedModels` reports and `/scoped-models` lists, formatted the way pi's
+ * own `Model scope:` line does (`id`, plus `:thinkingLevel` when the pattern
+ * carried one).
  *
- * `patchStartupListing` owns both halves of the animation: the 16ms timer that
- * advances `frame`, and the debounce that flips `revealed` as pi's sections
- * arrive. Where the capability gate declines to install it (fullscreen screen,
- * ADR 0027), nothing moves the ref off its constructor values, so the header
- * is drawn forever in the animation's *initial* state — `getShinedLogo(0, …)`
- * hides every character whose reveal frame has not arrived, which on a
- * truecolor terminal is eight blank rows where the logo should be.
+ * The alternative it replaces was a `console.log` patch watching for pi to
+ * print that line, which both hid the line (the patch consumed it) and had no
+ * answer for a session where pi prints nothing.
  *
- * This is the same resting state the timer stops at in the quietStartup case
- * (`frame >= LOGO_SETTLE_FRAME`, nothing revealed, nothing pending): the logo
- * at rest, no captured sections, no reveal waiting. Idempotent, because the
- * header factory is re-invoked on every screen switch.
+ * Returns `undefined` for no scope, so the section is simply absent: an empty
+ * `[Models]` header is pi's "nothing scoped" case, and there pi offers every
+ * model. A host without the property answers the same way.
  */
-export function settleHeader(ref: ListingRef): void {
-  ref.frame = LOGO_SETTLE_FRAME;
-  ref.revealed = false;
-  ref.revealedAt = 0;
-  ref.scaffoldAt = 0;
-  ref.settled = false;
-  ref.sections = [];
-  delete ref.cachedLines;
-  delete ref.cachedWidth;
-  delete ref.cachedHeight;
+export function modelScopeSection(
+  scopedModels: readonly ScopedModel[] | undefined,
+): ParsedSection | undefined {
+  if (!Array.isArray(scopedModels)) return undefined;
+
+  const items: string[] = [];
+  for (const scoped of scopedModels) {
+    const id = scoped?.model?.id;
+    if (typeof id !== "string" || id === "") continue;
+    items.push(scoped.thinkingLevel ? `${id}:${scoped.thinkingLevel}` : id);
+  }
+  return items.length > 0 ? { name: "Models", items } : undefined;
 }
 
-// ── Section text extraction ───────────────────────────────────────────────
+// ── The animation ───────────────────────────────────────────────────────────
 
 /**
- * Read the full text of a section component.
- *
- * pi ≥0.99 builds ExpandableText with constructor closures (no instance
- * getExpandedText() anymore) and starts collapsed — a plain render() would
- * return the lossy comma-joined body. setExpanded(true) (pi's own public
- * expansion API) makes render() return the full per-item body.
+ * Sections wait this long after the header is built before they appear, so the
+ * logo gets its reveal frames first. The old value, kept: it is the interval
+ * pi's own section components used to arrive inside, and the splash looks the
+ * same either way.
  */
-function expandedText(component: Text): string {
-  const setExpanded = (component as any).setExpanded;
-  if (typeof setExpanded === "function") setExpanded.call(component, true);
-  return stripAnsi(component.render(MAX_RENDER_WIDTH).join("\n"));
+const REVEAL_DEBOUNCE_MS = 150;
+const FRAME_INTERVAL_MS = 16;
+
+// One splash is on screen at a time. pi disposes the previous header before it
+// builds the next one (`setExtensionHeader()` — a new session, `/reload`, or any
+// `setHeader()` call), so a module pair of timers cannot leak a second
+// animation — and holds no renderer: each timer closes over the `tui` it was
+// started with, and the one running is the one the current header factory was
+// handed (ADR 0027).
+let frameTimer: ReturnType<typeof setInterval> | undefined;
+let revealTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Stop both halves of the animation (header disposed, session ended). */
+export function stopStartupListing(): void {
+  if (frameTimer) {
+    clearInterval(frameTimer);
+    frameTimer = undefined;
+  }
+  if (revealTimer) {
+    clearTimeout(revealTimer);
+    revealTimer = undefined;
+  }
 }
 
-// ── Chat container discovery ────────────────────────────────────────────
-
-// Fragile: relies on TUI child ordering (header, chat, footer) which is an
-// internal layout detail of pi's InteractiveMode. If upstream changes the
-// child structure, this will need updating.
-//
-// Strategy (most specific → least specific):
-// 1. Container with "Scrollable" in constructor name
-// 2. Middle child — TUI layout is [headerContainer, chatContainer, footer]
-//    This is position-stable even when chatContainer is empty (e.g. after clear)
-// 3. Container with most children (chat usually has the most)
-// 4. First Container found
-function findChatContainer(tui: TUI): Container | undefined {
-  // Strategy 1: Look for Scrollable container
-  for (const child of tui.children) {
-    if (child instanceof Container && child.constructor.name.includes("Scrollable")) {
-      return child;
+function startFrameTimer(tui: TUI, ref: ListingRef): void {
+  if (frameTimer) clearInterval(frameTimer);
+  frameTimer = setInterval(() => {
+    ref.frame++;
+    // Logo done and either the listing settled, or nothing is revealed and
+    // none is on its way — the state a quiet start leaves behind. Idle frames
+    // cost a full viewport redraw on fullscreen screen, so stop here rather
+    // than repaint forever (#92).
+    const nothingToAnimate = ref.settled || (!ref.revealed && !revealTimer);
+    if (nothingToAnimate && ref.frame >= LOGO_SETTLE_FRAME) {
+      clearInterval(frameTimer);
+      frameTimer = undefined;
+      return;
     }
-  }
-
-  // Strategy 2: Middle child — TUI layout is [headerContainer, chatContainer, footer]
-  if (tui.children.length >= 3) {
-    const middle = tui.children[1];
-    if (middle instanceof Container) return middle;
-  }
-
-  // Strategy 3: Find the Container with the most children (chat area)
-  const containers = tui.children.filter((c): c is Container => c instanceof Container);
-  if (containers.length > 1) {
-    const largest = containers.reduce((best, c) =>
-      c.children.length > best.children.length ? c : best,
-    );
-    if (largest.children.length > 0) return largest;
-  }
-
-  // Strategy 4: First Container
-  if (containers.length > 0) return containers[0];
-
-  return undefined;
+    tui.requestRender();
+  }, FRAME_INTERVAL_MS);
 }
 
-// Pi 0.84+ moved resource sections from chatContainer to loadedResourcesContainer
-// (child of documentContainer). Find it by locating documentContainer (the first TUI
-// child that contains Container sub-children), then taking its second Container child.
-//
-// Pi 0.84+ TUI layout (regular mode, 7 top-level children):
-//   documentContainer → [headerContainer(0), loadedResourcesContainer(1), chatContainer(2)]
-function findLoadedResourcesContainer(tui: TUI): Container | undefined {
-  // Only run this heuristic on Pi >= 0.84.0 where loadedResourcesContainer exists.
-  // On older Pi versions, return undefined so the caller falls back to findChatContainer().
-  if (compareVersions(VERSION, "0.84.0") < 0) return undefined;
-
-  // Find documentContainer: first tui child that has Container sub-children
-  const docContainer = tui.children.find(
-    (c) => c instanceof Container && c.children.some((child) => child instanceof Container)
-  ) as Container | undefined;
-  if (!docContainer) return undefined;
-
-  const containerChildren = docContainer.children.filter(
-    (c): c is Container => c instanceof Container
-  );
-  // Pi 0.84+: [headerContainer(0), loadedResourcesContainer(1), chatContainer(2)]
-  // The index [1] assumption is load-bearing — tied to Pi 0.84+ initialization order.
-  if (containerChildren.length < 2) return undefined;
-  return containerChildren[1]; // loadedResourcesContainer
-}
-
-export function patchStartupListing(
-  tui: TUI,
-  _theme: Theme,
-  ref: ListingRef,
-): void {
-  const resourcesContainer = findLoadedResourcesContainer(tui) ?? findChatContainer(tui);
-  if (!resourcesContainer) {
-    // Runs inside the header factory, i.e. on a render path: a console write
-    // here lands in the frame being drawn. Structural drift is for the log.
-    diag("ui", "[archimedes] Could not find resources container — startup listing disabled. This may indicate a pi TUI structure change.");
-    return;
-  }
-  const rc = resourcesContainer as any;
-
-  // Always update ref + restart animation (critical for /reload)
-  rc[LISTING_REF] = ref;
+/**
+ * Install the splash for the header we were just handed: reset the animation
+ * ref and start the frame timer. Re-installing (a new session, `/reload`, or
+ * any other `setHeader()` replacement, each of which pi disposes the old header
+ * before it calls the factory) restarts the animation on the renderer now in
+ * hand and stops the previous one — a stale renderer must not keep being asked
+ * for frames.
+ *
+ * Sections are not passed here: call {@link revealStartupListing} with them
+ * (or not at all, which leaves the splash as logo + version).
+ */
+export function patchStartupListing(tui: TUI, ref: ListingRef): void {
+  stopStartupListing();
   ref.frame = 0;
   ref.revealed = false;
   ref.revealedAt = 0;
@@ -272,133 +232,38 @@ export function patchStartupListing(
   ref.settled = false;
   delete ref.cachedLines;
   delete ref.cachedWidth;
-  delete ref.maxHeaderHeight;
+  delete ref.cachedHeight;
 
-  if (rc[DEBOUNCE_TIMER]) clearTimeout(rc[DEBOUNCE_TIMER]);
-  rc[DEBOUNCE_TIMER] = null;
+  startFrameTimer(tui, ref);
+}
 
-  const startAnimation = () => {
-    if (rc[ANIM_INTERVAL]) clearInterval(rc[ANIM_INTERVAL]);
-    const interval = setInterval(() => {
-      try {
-        const current: ListingRef = rc[LISTING_REF];
-        if (!current) {
-          clearInterval(interval);
-          return;
-        }
-        current.frame++;
-        // Logo done and either the listing settled, or nothing is revealed/pending (quietStartup)
-        const nothingToAnimate = current.settled || (!current.revealed && !rc[DEBOUNCE_TIMER]);
-        if (nothingToAnimate && current.frame >= LOGO_SETTLE_FRAME) {
-          clearInterval(interval);
-          rc[ANIM_INTERVAL] = null;
-          return;
-        }
-        tui.requestRender();
-      } catch {
-        clearInterval(interval);
-      }
-    }, 16);
-    rc[ANIM_INTERVAL] = interval;
-  };
-  startAnimation();
-
-  // Fetch latest version from npm
-  fetchLatestVersion().then(v => {
-    if (v) {
-      const current: ListingRef = rc[LISTING_REF];
-      current.latestVersion = v;
-      // Invalidate cache so version updates on next render
-      delete current.cachedLines;
-      current.settled = false;
-    }
-  });
-
-  // Patch clear() to intercept container rebuild
-  if (!rc[PATCHED_CLEAR]) {
-    rc[PATCHED_CLEAR] = true;
-    const origClear = resourcesContainer.clear.bind(resourcesContainer);
-    resourcesContainer.clear = () => {
-      return origClear();
-    };
-  }
-
-  // Only patch addChild once — the closure reads rc[LISTING_REF] dynamically
-  if (rc[PATCHED_LISTING]) {
-    resourcesContainer.clear();
-    return;
-  }
-  rc[PATCHED_LISTING] = true;
-
-  const origAddChild = resourcesContainer.addChild.bind(resourcesContainer);
-  rc[ORIG_ADD_CHILD] = origAddChild; // Store for cleanup on shutdown
-  resourcesContainer.clear();
-
-  resourcesContainer.addChild = (component: Component) => {
-    try {
-      const currentRef: ListingRef = rc[LISTING_REF];
-
-      if (component instanceof Text) {
-      // pi ≥0.67.6 wraps startup sections in ExpandableText; collapsed body
-      // is a lossy comma-joined base-name list. Parse the expanded text so
-      // Extensions keep real names instead of "index.ts/index.js/index".
-      // pi ≥0.99 moved the text builders into the constructor (no instance
-      // getExpandedText()) — expandedText() forces expansion via setExpanded().
-      const getExpanded = (component as any).getExpandedText;
-      const plain = typeof getExpanded === "function"
-        ? stripAnsi(getExpanded.call(component))
-        : expandedText(component);
-
-      const section = parseSectionText(plain) ?? parseModelScope(plain);
-      if (section) {
-        const existing = currentRef.sections.find(s => s.name === section.name);
-        if (existing) {
-          existing.items = [...new Set([...existing.items, ...section.items])];
-        } else {
-          currentRef.sections.push(section);
-        }
-
-        // Invalidate cache so late-arriving sections show up
-        currentRef.settled = false;
-        delete currentRef.cachedLines;
-
-        if (currentRef.revealed) {
-          // Already revealed — show new section immediately
-          tui.requestRender();
-        } else {
-          // Batch initial sections — reset debounce on each arrival
-          if (rc[DEBOUNCE_TIMER]) clearTimeout(rc[DEBOUNCE_TIMER]);
-          rc[DEBOUNCE_TIMER] = setTimeout(() => {
-            const ref: ListingRef = rc[LISTING_REF];
-            ref.revealed = true;
-            ref.revealedAt = ref.frame;
-            ref.scaffoldAt = ref.frame;
-            tui.requestRender();
-            rc[DEBOUNCE_TIMER] = null;
-            if (!rc[ANIM_INTERVAL]) startAnimation(); // logo may have settled first; the text fade-in needs frames
-          }, REVEAL_DEBOUNCE_MS);
-        }
-
-        return;
-      }
-
-      if (
-        plain.includes("Listing all available commands") ||
-        plain.includes("(Source: extension)") ||
-        plain.trim().startsWith("/skill:")
-      ) {
-        return;
-      }
-    }
-
-    if (component instanceof Spacer && !currentRef.revealed) return;
-    try {
-      origAddChild(component);
-    } catch (err) {
-      diag("ui", `[archimedes] Error in resourcesContainer.addChild: ${describeError(err)}`);
-    }
-  } catch (err) {
-    diag("ui", `[archimedes] Error in startup listing addChild handler: ${describeError(err)}`);
-  }
-  };
+/**
+ * Reveal the splash's text half — the version row always comes with the
+ * header, `sections` is whatever the caller decided to show next (see
+ * {@link modelScopeSection}).
+ *
+ * Debounced so the logo keeps its frames, and it restarts the frame timer when
+ * the logo already settled before anything arrived: without the restart the
+ * text would be revealed into a stopped animation and fade in over frames
+ * nobody draws.
+ */
+export function revealStartupListing(
+  tui: TUI,
+  ref: ListingRef,
+  sections: ParsedSection[],
+): void {
+  if (revealTimer) clearTimeout(revealTimer);
+  revealTimer = setTimeout(() => {
+    revealTimer = undefined;
+    ref.sections = sections;
+    ref.revealed = true;
+    ref.revealedAt = ref.frame;
+    ref.scaffoldAt = ref.frame;
+    ref.settled = false;
+    delete ref.cachedLines;
+    delete ref.cachedWidth;
+    delete ref.cachedHeight;
+    tui.requestRender();
+    if (!frameTimer) startFrameTimer(tui, ref);
+  }, REVEAL_DEBOUNCE_MS);
 }
