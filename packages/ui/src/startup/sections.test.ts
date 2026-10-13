@@ -20,11 +20,15 @@ import {
 	extractName,
 	formatColumns,
 	buildItemWrapper,
-	SECTION_KEYS,
 	RAMP_FRAMES,
 } from "./sections.js";
+import * as sectionsModule from "./sections.js";
 
 // ── detectSection ────────────────────────────────────────────────────────────
+//
+// Pi owns the startup listing, so section names are pi's to choose. We
+// recognise the *shape* of a section header rather than a fixed vocabulary:
+// whatever pi prints gets captured and rendered.
 
 describe("detectSection", () => {
 	it("finds Models section key", () => {
@@ -32,7 +36,7 @@ describe("detectSection", () => {
 	});
 
 	it("finds Context section key", () => {
-		expect(detectSection("some text [Context] more")).toBe("Context");
+		expect(detectSection("[Context]\n  /home/me/AGENTS.md")).toBe("Context");
 	});
 
 	it("finds Prompts section key", () => {
@@ -40,15 +44,64 @@ describe("detectSection", () => {
 	});
 
 	it("finds Skills section key", () => {
-		expect(detectSection("Skills: [Skills] list")).toBe("Skills");
+		expect(detectSection("[Skills]\n  git:github.com/foo/bar")).toBe("Skills");
+	});
+
+	it("ignores a bracketed word that does not lead the text", () => {
+		// pi always builds a section as `[Name]\n<body>`, so a header-shaped
+		// word with anything in front of it is content, not a header: it is
+		// either a diagnostic body or a sentence, and swallowing it would hide
+		// pi's own text. See SECTION_HEADER for the pi citation.
+		expect(detectSection("some text [Context] more")).toBeUndefined();
+		expect(detectSection("Skills: [Skills] list")).toBeUndefined();
+		expect(parseSectionText("Loading [Extensions] from workspace")).toBeUndefined();
 	});
 
 	it("finds Extensions section key", () => {
 		expect(detectSection("[Extensions]\nfoo")).toBe("Extensions");
 	});
 
-	it("finds Themes section key", () => {
+	it("finds Themes section key (older pi still emits it)", () => {
 		expect(detectSection("[Themes]\ndark")).toBe("Themes");
+	});
+
+	it("captures a section name the suite has never heard of", () => {
+		// The point of shape-based detection: a section pi adds later is
+		// captured by this code as written, with no constant to edit.
+		expect(detectSection("[Widgets]\n/a/b/index.ts")).toBe("Widgets");
+		expect(parseSectionText("[Widgets]\n  /a/b/widget.ts")!.items).toEqual(["widget"]);
+	});
+
+	it("leaves pi's startup diagnostics to pi", () => {
+		// These share the container but are warnings, not resource sections —
+		// swallowing them into the splash would hide them from the user.
+		for (const warning of [
+			"[Skill conflicts]\n  dup skill",
+			"[Prompt conflicts]\n  dup prompt",
+			"[Extension issues]\n  failed to load",
+			"[Theme conflicts]\n  bad theme",
+		]) {
+			expect(detectSection(warning), warning).toBeUndefined();
+			expect(parseSectionText(warning)).toBeUndefined();
+		}
+	});
+
+	it("does not mistake a bracketed word in a warning body for a section header", () => {
+		// pi builds a diagnostic as `[Extension issues]\n<message>` where
+		// <message> is arbitrary text from the failing extension (pi's
+		// formatDiagnostics prints `d.message` verbatim), so it can contain a
+		// bracketed Capitalised word — a path segment, an error tag. That text
+		// belongs to pi: matching it as a header makes the startup `addChild`
+		// patch swallow the whole warning, deleting an error from the user's
+		// screen and rendering its contents as a splash section.
+		for (const warning of [
+			"[Extension issues]\n  Cannot find module '/tmp/[Broken]/index.ts'",
+			"[Skill conflicts]\n  \"run\" collision in [Widgets] directory",
+			"[Theme conflicts]\n  unexpected token [Syntax] at line 4",
+		]) {
+			expect(detectSection(warning), warning).toBeUndefined();
+			expect(parseSectionText(warning), warning).toBeUndefined();
+		}
 	});
 
 	it("returns undefined for non-section text", () => {
@@ -59,13 +112,26 @@ describe("detectSection", () => {
 		expect(detectSection("")).toBeUndefined();
 	});
 
-	it("returns undefined for bracketed text that is not a section key", () => {
+	it("returns undefined for bracketed text that is not a section header", () => {
+		// Not the single Capitalised-word shape of pi's section headers.
 		expect(detectSection("[NotASection]")).toBeUndefined();
+		expect(detectSection("[WARNING]")).toBeUndefined();
+		expect(detectSection("[lowercase]")).toBeUndefined();
 	});
 
 	it("returns the first matching section key", () => {
 		const text = "[Models]\n[Context]";
 		expect(detectSection(text)).toBe("Models");
+	});
+});
+
+describe("sections module", () => {
+	it("carries no hardcoded list of startup sections", () => {
+		// pi 0.99.0 dropped [Themes] and 1.2.0 emits Context/Skills/Prompts/
+		// Extensions plus a model-scope line. A constant of "the sections" is
+		// a claim about pi's output that goes stale on its own schedule, so
+		// the module must not export one.
+		expect(Object.keys(sectionsModule)).not.toContain("SECTION_KEYS");
 	});
 });
 

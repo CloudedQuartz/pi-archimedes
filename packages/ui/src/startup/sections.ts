@@ -5,18 +5,20 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 // ── Types ──────────────────────────────────────────────────────
-
-export const SECTION_KEYS = ["Models", "Context", "Prompts", "Skills", "Extensions", "Themes"] as const;
-export type SectionKey = (typeof SECTION_KEYS)[number];
-type RenderSectionKey = SectionKey | "Version";
+//
+// Pi owns the startup listing, so the set of sections is pi's to decide —
+// 0.99.0 dropped `[Themes]`, 1.2.0 prints Context/Skills/Prompts/Extensions
+// plus a model-scope line. Nothing in this module enumerates them: sections
+// are detected by the shape of a header that leads the text, and rendered in
+// the order they were captured.
 
 export interface ParsedSection {
-  name: SectionKey;
+  name: string;
   items: string[];
 }
 
 interface RenderSection {
-  name: RenderSectionKey;
+  name: string;
   items: string[];
 }
 
@@ -29,11 +31,30 @@ export const MAX_STAGGER = BASE_FADE_DELAY + 5 * STAGGER_FRAMES;
 
 // ── Section detection & parsing ────────────────────────────────
 
-export function detectSection(plain: string): SectionKey | undefined {
-  for (const key of SECTION_KEYS) {
-    if (plain.includes(`[${key}]`)) return key;
-  }
-  return undefined;
+/**
+ * A pi startup section header: a bracketed single Capitalised word
+ * (`[Context]`, `[Extensions]`) **leading** the component's text.
+ *
+ * Two independent reasons the anchor is load-bearing:
+ * - The shape keeps the diagnostics pi prints into the same container out of
+ *   the splash (`[Skill conflicts]`, `[Extension issues]`, `[Prompt
+ *   conflicts]`, `[Theme conflicts]` all carry a space in the title).
+ * - Those diagnostics' *bodies* are arbitrary text from the failing resource
+ *   (pi's `formatDiagnostics` prints the message verbatim), so a bracketed
+ *   Capitalised word can appear inside one. Matched anywhere but the start,
+ *   that warning becomes a "section", and the startup `addChild` patch then
+ *   swallows the diagnostic — an error silently deleted from the user's view.
+ *
+ * Real sections always lead: pi builds each one as
+ * `` `${sectionHeader(name)}\n${body()}` `` (`addLoadedSection`,
+ * pi-coding-agent `dist/modes/interactive/interactive-mode.js`, unchanged
+ * 0.87→1.2.0), and callers hand us `stripAnsi` output, which trims, so
+ * leading indentation cannot hide a header either.
+ */
+const SECTION_HEADER = /^\[([A-Z][a-z]+)\]/;
+
+export function detectSection(plain: string): string | undefined {
+  return SECTION_HEADER.exec(plain)?.[1];
 }
 
 export function parseSectionText(plain: string): ParsedSection | undefined {
@@ -49,7 +70,7 @@ export function parseSectionText(plain: string): ParsedSection | undefined {
  * Extract item names from a section's plain text.
  * Tracks source prefixes (npm:/git:) for Extensions/Skills sections.
  */
-function extractItemsFromSection(plain: string, sectionName: SectionKey): string[] {
+function extractItemsFromSection(plain: string, sectionName: string): string[] {
   const names: string[] = [];
   const lines = plain.split("\n");
   let currentSource = "";
@@ -93,7 +114,7 @@ function extractItemsFromSection(plain: string, sectionName: SectionKey): string
  * of one clamped line ending in "...". Expanded bodies are per-item path
  * lines; names never contain ", ", so splitting is safe.
  */
-function extractNames(line: string, sectionName: SectionKey): string[] {
+function extractNames(line: string, sectionName: string): string[] {
   const parts = line.includes(", ")
     ? line.split(", ").map(p => p.trim()).filter(Boolean)
     : [line];
@@ -159,38 +180,47 @@ type Extractor = (clean: string, prefix: string) => string;
 const defaultExtract: Extractor = (clean, prefix) =>
   prefix + cleanName(clean.split("/").pop() ?? clean);
 
-const sectionExtractors: Record<SectionKey, Extractor> = {
-  Models: defaultExtract,
-  Themes: defaultExtract,
-  Prompts: (clean) => {
-    const base = clean.split("/").pop() ?? clean;
-    return cleanName(base) || clean;
-  },
-  Context: (clean) => clean.split("/").pop() ?? clean,
-  Skills: (clean, prefix) => {
-    if (!clean.includes("/")) return defaultExtract(clean, prefix);
-    const parts = clean.split("/");
-    const file = parts.pop() ?? "";
-    if (/^SKILL\.(md|ts|js)$/i.test(file)) {
-      return prefix + cleanName(parts.pop() ?? file);
-    }
-    return prefix + cleanName(file);
-  },
-  Extensions: (clean, prefix) => {
-    const stripped = clean.replace(/^https?:\/\/[^/]+\//, "");
-    const parts = stripped.split("/").filter(p => {
-      const lower = p.toLowerCase();
-      return p && !/^(index\.(ts|js)|src|dist|out|build|lib|bin)$/.test(lower);
-    });
-    if (parts.length > 0) return prefix + cleanName(parts.pop()!);
-    return prefix + cleanName(clean);
-  },
-};
+const sectionExtractors = new Map<string, Extractor>([
+  // Models, Themes and any section pi adds later take `defaultExtract`.
+  [
+    "Prompts",
+    (clean) => {
+      const base = clean.split("/").pop() ?? clean;
+      return cleanName(base) || clean;
+    },
+  ],
+  ["Context", (clean) => clean.split("/").pop() ?? clean],
+  [
+    "Skills",
+    (clean, prefix) => {
+      if (!clean.includes("/")) return defaultExtract(clean, prefix);
+      const parts = clean.split("/");
+      const file = parts.pop() ?? "";
+      if (/^SKILL\.(md|ts|js)$/i.test(file)) {
+        return prefix + cleanName(parts.pop() ?? file);
+      }
+      return prefix + cleanName(file);
+    },
+  ],
+  [
+    "Extensions",
+    (clean, prefix) => {
+      const stripped = clean.replace(/^https?:\/\/[^/]+\//, "");
+      const parts = stripped.split("/").filter(p => {
+        const lower = p.toLowerCase();
+        return p && !/^(index\.(ts|js)|src|dist|out|build|lib|bin)$/.test(lower);
+      });
+      if (parts.length > 0) return prefix + cleanName(parts.pop()!);
+      return prefix + cleanName(clean);
+    },
+  ],
+]);
 
-export function extractName(path: string, section: SectionKey): string {
+export function extractName(path: string, section: string): string {
   const trimmed = path.trim();
   const { prefix, clean } = detectOrigin(trimmed);
-  return sectionExtractors[section](clean, prefix);
+  const extract = sectionExtractors.get(section) ?? defaultExtract;
+  return extract(clean, prefix);
 }
 
 // ── Column formatter ───────────────────────────────────────────

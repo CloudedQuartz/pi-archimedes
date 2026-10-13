@@ -11,7 +11,7 @@ import type {
 } from "@earendil-works/pi-tui";
 
 import { HephaestusEditor } from "./editor/index.js";
-import { renderHeader, patchStartupListing, type ListingRef } from "./startup/index.js";
+import { renderHeader, patchStartupListing, settleHeader, CONTENT_ONLY_HEIGHT, type ListingRef } from "./startup/index.js";
 import { patchConsoleLog, unpatchConsoleLog } from "./startup/capture.js";
 import { patchThinkingRenderer } from "./thinking/patch.js";
 import { transformThinkingContent } from "./thinking/transform.js";
@@ -25,6 +25,7 @@ import {
   type UIConfig,
   type CoreConfig,
 } from "./config.js";
+import { screenCapabilities, screenMode } from "@pi-archimedes/core/screen-mode";
 import { getUISettingsItems } from "./settings.js";
 import { migrateCoreToUIConfig, migrateCompactThinkingToStyle, migrateRemovedToolPatch } from "./migration.js";
 import { registerBashToolOverride, clearActiveBashIntervals } from "./bash/index.js";
@@ -51,6 +52,9 @@ export {
 // Module-level state for session lifecycle
 let uiRef: ListingRef | undefined;
 let uiCtx: ExtensionContext | undefined;
+// Stored renderer — the one ADR 0027 forbids, and the one entry in the
+// guard's allow-list. It exists only for the shutdown un-patch below and goes
+// away with that patch in Task 8.
 let uiTui: TUI | undefined;
 
 let spinFlag = false;
@@ -186,13 +190,34 @@ export function registerUI(pi: ExtensionAPI): void {
       const ref = uiRef;
       const headerFactory = (tui: TUI, theme: Theme): Component & { dispose?(): void } => {
         uiTui = tui;
+        // The splash animation and the startup resource listing both append
+        // into terminal scrollback, which fullscreen screen does not have —
+        // so they install on regular screen only (ADR 0027). The question is
+        // asked of the renderer we were just handed, every call: screen mode
+        // is mutable mid-session (`switchTuiMode()` rebuilds the TUI and
+        // re-invokes this factory), so caching the answer would keep the old
+        // screen's policy. Header replacement itself stays on every screen.
+        const caps = screenCapabilities(screenMode(tui));
         const comp: Component & { dispose?(): void } = {
           invalidate(): void {},
           render(width: number): string[] {
-            return renderHeader(theme, ref, width, tui.terminal.rows - 3);
+            // Regular screen: sized to the terminal the splash scrolls
+            // through. Frame-bounded screen: the viewport owns the height, so
+            // the header gets its content and nothing more — padded to the
+            // terminal it would be the whole viewport, editor excluded.
+            const height = caps.frameBounded ? CONTENT_ONLY_HEIGHT : tui.terminal.rows - 3;
+            return renderHeader(theme, ref, width, height);
           },
         };
-        patchStartupListing(tui, theme, ref);
+        if (caps.transcriptWrite) {
+          patchStartupListing(tui, theme, ref);
+        } else {
+          // Suppressing the splash is not the same as leaving it mid-flight:
+          // nothing here advances the ref, so start it where an animation
+          // would have left it rather than at frame 0 (an invisible logo on a
+          // truecolor terminal, no version rows, forever).
+          settleHeader(ref);
+        }
         return comp;
       };
       ctx.ui.setHeader(headerFactory);
@@ -201,6 +226,10 @@ export function registerUI(pi: ExtensionAPI): void {
       ctx.ui.setWorkingVisible(!spinFlag);
 
       if (spinFlag) {
+        // The border spinner lives in the editor frame, not in scrollback, so
+        // it runs on either screen. The renderer is handed straight to the
+        // editor and never kept by us, and idleness is read from `ctx` rather
+        // than from the renderer, so a screen-mode switch cannot strand it.
         ctx.ui.setEditorComponent(
           (tui: TUI, editorTheme: EditorTheme, keybindings: KeybindingsManager) => {
             const theme = ctx.ui.theme;

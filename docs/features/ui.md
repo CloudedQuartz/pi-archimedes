@@ -1,6 +1,6 @@
 ---
 status: live
-last-verified: 2026-10-08
+last-verified: 2026-10-13
 verified-by: pnpm test
 ---
 
@@ -35,6 +35,7 @@ verified-by: pnpm test
 5. **Startup Splash Animation**:
    - Terminal logo reveal and animation sequences (`animationStyle`), optionally in pi's brand colors (`colorfulLogo`).
    - Safe console log interception and restoration (`unpatchConsoleLog`).
+   - **Screen mode gates it** (ADR 0027): the animation and the startup resource listing append into terminal scrollback, so they install on regular screen only, decided from the renderer handed to the header factory on every call (screen mode can change mid-session). Fullscreen screen keeps the replaced header — settled at `LOGO_SETTLE_FRAME` via `settleHeader()`, no listing, and sized to its own content (`CONTENT_ONLY_HEIGHT`) instead of padded to terminal height, because nothing there advances the animation ref.
 
 ## Settings Namespace
 

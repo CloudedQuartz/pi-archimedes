@@ -1,7 +1,7 @@
 import { VERSION, type Theme } from "@earendil-works/pi-coding-agent";
 import { getShinedLogo, TRUECOLOR, LOGO_PAD, LOGO_SETTLE_FRAME } from "./logo.js";
 import { loadUIConfig } from "../config.js";
-import { detectSection, parseSectionText, parseModelScope, formatColumns, buildItemWrapper, type ParsedSection, SECTION_KEYS } from "./sections.js";
+import { detectSection, parseSectionText, parseModelScope, formatColumns, buildItemWrapper, type ParsedSection } from "./sections.js";
 import { fetchLatestVersion, compareVersions } from "./version.js";
 import { stripAnsi } from "@pi-archimedes/core/text";
 import { Text, Spacer, Container, type TUI, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
@@ -22,6 +22,17 @@ const RAMP_FRAMES = 22;
 const STAGGER_FRAMES = 0;
 const BASE_FADE_DELAY = 3;
 const MAX_STAGGER = BASE_FADE_DELAY + 5 * STAGGER_FRAMES;
+
+/**
+ * Height to size the header against when there is no scrollback to pad into
+ * (`renderHeader`'s `height`): the header renders exactly its own content.
+ *
+ * On regular screen the header is sized to the terminal because the splash is
+ * about to be pushed through scrollback. A frame-bounded screen (fullscreen,
+ * ADR 0027) allocates its own height, so padding to terminal rows would make
+ * the header the whole viewport and leave the editor nothing.
+ */
+export const CONTENT_ONLY_HEIGHT = 0;
 
 export interface ListingRef {
   sections: ParsedSection[];
@@ -51,7 +62,7 @@ export function renderHeader(theme: Theme, ref: ListingRef, width: number, heigh
   if (ref.settled && ref.cachedLines && ref.cachedWidth === width && ref.cachedHeight === height) {
     listingLines = ref.cachedLines;
   } else {
-    const sectionsToRender: { name: "Version" | ParsedSection["name"]; items: string[] }[] = [];
+    const sectionsToRender: { name: string; items: string[] }[] = [];
 
     if (!ref.revealed) {
       // Logo only — sections appear together on reveal
@@ -61,11 +72,11 @@ export function renderHeader(theme: Theme, ref: ListingRef, width: number, heigh
       const latestStr = hasUpdate ? `Latest: ${accent("v" + latest)}` : `Latest: v${latest}`;
       sectionsToRender.push({ name: "Version", items: [`Local: v${VERSION}`, latestStr] });
 
-      // Display sections in SECTION_KEYS order, skip empty
-      const byName = new Map(ref.sections.map(s => [s.name, s]));
-      for (const key of SECTION_KEYS) {
-        const sec = byName.get(key);
-        if (sec && sec.items.length > 0) sectionsToRender.push(sec);
+      // Render what was actually captured, in the order pi added it — pi
+      // chooses which sections exist, so there is no list here to keep in
+      // step. Empty sections are pi's "nothing loaded", skip them.
+      for (const sec of ref.sections) {
+        if (sec.items.length > 0) sectionsToRender.push(sec);
       }
     }
 
@@ -104,11 +115,14 @@ export function renderHeader(theme: Theme, ref: ListingRef, width: number, heigh
     contentLines.push(" ".repeat(LOGO_PAD) + " ".repeat(listingLeftPad) + listRow);
   }
 
-  // Pad top and bottom to fill height (+5 top bias for visual centering)
+  // Pad top and bottom to fill height (+5 top bias for visual centering).
+  // The bias only applies when there is something to distribute: with no
+  // height left over (`CONTENT_ONLY_HEIGHT` on a frame-bounded screen) the
+  // header is its own content and must not gain stray blank rows.
   const VERTICAL_CENTER_BIAS = 5; // Shift content slightly upward for visual balance
   const contentHeight = contentLines.length;
   const remaining = Math.max(0, height - contentHeight);
-  const topPad = Math.floor(remaining / 2) + VERTICAL_CENTER_BIAS;
+  const topPad = remaining > 0 ? Math.floor(remaining / 2) + VERTICAL_CENTER_BIAS : 0;
   const bottomPad = remaining - topPad;
 
   const result: string[] = [];
@@ -117,6 +131,37 @@ export function renderHeader(theme: Theme, ref: ListingRef, width: number, heigh
   for (let i = 0; i < bottomPad; i++) result.push("");
 
   return result;
+}
+
+// ── Screen-mode entry point ──────────────────────────────────────────────
+
+/**
+ * Put the listing ref into the state a finished splash leaves behind, without
+ * animating it — for a screen that cannot run the splash at all.
+ *
+ * `patchStartupListing` owns both halves of the animation: the 16ms timer that
+ * advances `frame`, and the debounce that flips `revealed` as pi's sections
+ * arrive. Where the capability gate declines to install it (fullscreen screen,
+ * ADR 0027), nothing moves the ref off its constructor values, so the header
+ * is drawn forever in the animation's *initial* state — `getShinedLogo(0, …)`
+ * hides every character whose reveal frame has not arrived, which on a
+ * truecolor terminal is eight blank rows where the logo should be.
+ *
+ * This is the same resting state the timer stops at in the quietStartup case
+ * (`frame >= LOGO_SETTLE_FRAME`, nothing revealed, nothing pending): the logo
+ * at rest, no captured sections, no reveal waiting. Idempotent, because the
+ * header factory is re-invoked on every screen switch.
+ */
+export function settleHeader(ref: ListingRef): void {
+  ref.frame = LOGO_SETTLE_FRAME;
+  ref.revealed = false;
+  ref.revealedAt = 0;
+  ref.scaffoldAt = 0;
+  ref.settled = false;
+  ref.sections = [];
+  delete ref.cachedLines;
+  delete ref.cachedWidth;
+  delete ref.cachedHeight;
 }
 
 // ── Section text extraction ───────────────────────────────────────────────

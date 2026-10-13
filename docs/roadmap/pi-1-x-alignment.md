@@ -156,7 +156,7 @@ Leave the existing `typecheck` job exactly as it is (frozen lockfile + `pnpm tes
 **Files:**
 - Create: `packages/core/src/screen-mode.ts`, `packages/core/src/screen-mode.test.ts`
 - Modify: `packages/core/package.json` — add `"./screen-mode": "./src/screen-mode.ts"` to the `exports` map. **`packages/core/src/index.ts` exports only `registerCore` and the default factory (`:8-24`); every cross-package consumer imports a subpath** (`@pi-archimedes/core/text`, `/overlay`, `/settings-io`, …), so a module that is not in the `exports` map is invisible to `ui`, `subagent`, `meta`.
-- Modify: `packages/ui/src/index.ts` (`:209` `isIdle` wiring, `:195` header factory where `patchStartupListing` is invoked, `:198` `ctx.ui.setHeader()`), `packages/ui/src/startup/index.ts` (`patchStartupListing` install site), `packages/ui/src/startup/sections.ts:9`
+- Modify: `packages/ui/src/index.ts` (`:226` `isIdle` wiring, `:190` header factory where `patchStartupListing` is invoked, `:211` `ctx.ui.setHeader()`), `packages/ui/src/startup/index.ts` (`patchStartupListing` install site), `packages/ui/src/startup/sections.ts` (the `SECTION_KEYS` constant)
 - Create: `packages/core/src/screen-mode-discipline.test.ts` (the no-stored-`tui` guard)
 
 **What to implement:**
@@ -188,18 +188,20 @@ Keep `screenCapabilities` taking the mode (not the `tui`) so it is unit-testable
 
 In `packages/ui`, gate the scrollback-native startup work: the splash animation and the startup resource listing install only when `screenCapabilities(screenMode(tui)).transcriptWrite` is true, evaluated at the point the `tui` is handed to us (not at module load, not cached in a field). Header replacement via `ctx.ui.setHeader()` (`ui/src/index.ts:170`) stays — that API is unchanged and screen-mode independent. Gate the `addChild` patch in this task; **Task 8 removes it** via `quietStartup` + `setHeader`.
 
-`packages/ui/src/startup/sections.ts:9` currently asserts `["Models","Context","Prompts","Skills","Extensions","Themes"]`. pi 0.99.0 removed the `[Themes]` startup section and 1.2.0 emits Context/Skills/Prompts/Extensions plus a model-scope line; derive the rendered sections from what was actually captured and drop the hardcoded phantom entries rather than editing the constant to a new guess.
+Withholding the splash is not the same as leaving it mid-flight, so the gate has a second half. `patchStartupListing` is what advances `ref.frame` (its 16ms timer) and what flips `ref.revealed` (the section-reveal debounce); on fullscreen screen nothing else does, so a ref left at its constructor values is drawn forever in the animation's *initial* state — `getShinedLogo(0, …)` hides every character whose reveal frame has not arrived, i.e. eight blank rows where the logo should be on a truecolor terminal. Call `settleHeader(ref)` (`startup/index.ts`) instead: the resting state the timer stops at in the quietStartup case. And size the header by the capability — regular screen pads to `tui.terminal.rows - 3` because the splash scrolls through the terminal, while a frame-bounded screen allocates its own height, so the header gets `CONTENT_ONLY_HEIGHT` and renders exactly its content; padded to terminal rows it would be the whole viewport, editor excluded.
 
-Guard test (`screen-mode-discipline.test.ts`): walk `packages/*/src` and `meta/src` for `*.ts` (skip `*.test.ts`) and fail on any of `/(private|public|readonly)\s+\w*tui\w*\s*[:=]/`, `/\bthis\.\w*tui\w*\s*=/`, `/^(let|var)\s+\w*tui\w*\b/m`, or a module-scope `const \w*tui\w*\s*=`.
+`packages/ui/src/startup/sections.ts` asserted `["Models","Context","Prompts","Skills","Extensions","Themes"]`. pi 0.99.0 removed the `[Themes]` startup section and 1.2.0 emits Context/Skills/Prompts/Extensions plus a model-scope line; derive the rendered sections from what was actually captured and drop the hardcoded phantom entries rather than editing the constant to a new guess.
 
-The `\w*tui\w*` widening is not pedantry: `packages/ui/src/index.ts:54` declares `let uiTui: TUI | undefined` and assigns `uiTui = tui` at `:188` — the exact stale-renderer hazard ADR 0027 is about, and a regex anchored on the bare word `tui` matches nothing in the tree, so the guard would pass while the rule is broken in a file this task edits. Assert the walker finds a non-empty file set, and seed the allow-list only with genuine cases (each with a one-line reason).
+Guard test (`screen-mode-discipline.test.ts`): walk `packages/*/src` and `meta/src` for `*.ts` (skip `*.test.ts`) and fail on any of `/(private|public|readonly)\s+\w*tui\w*\s*[:=]/i`, `/\bthis\.\w*tui\w*\s*=/i`, `/^(export\s+)?(let|var)\s+\w*tui\w*\b/im`, `/^(export\s+)?const\s+\w*tui\w*\s*:\s*TUI\b/im`, or `/^(export\s+)?(let|var|const)\s+\w+\s*=\s*\w*tui\w*\s*[;,]?\s*$/im`. All five run case-insensitively (`i`) — the one real offender in the tree is `let uiTui`, whose capital `Tui` a case-sensitive `tui` never matches — and none of them puts `\b` in front of `tui`, because there is no word boundary between `ui` and `Tui`. The `export` prefix and the typed-const form are not extras: `export let sharedTui: TUI` and `const appTui: TUI = tui` hoard a renderer exactly as plainly as `let sharedTui = tui` does, and an untyped module-scope `const` is caught only when its initializer is a renderer, so the `tuiMode` *setting* (a screen-mode string whose name also contains "tui") stays out of the net.
+
+The `\w*tui\w*` widening is not pedantry: `packages/ui/src/index.ts:58` declares `let uiTui: TUI | undefined` and assigns `uiTui = tui` at `:192` — the exact stale-renderer hazard ADR 0027 is about, and a regex anchored on the bare word `tui` matches nothing in the tree, so the guard would pass while the rule is broken in a file this task edits. With the patterns as specified the walker reports exactly one hit, that declaration; it stays until Task 8. Assert the walker finds a non-empty file set, and seed the allow-list only with genuine cases (each with a one-line reason).
 
 **Steps:**
 - [ ] Write `packages/core/src/screen-mode.test.ts`: `screenMode({})` returns `"regular"`; `screenCapabilities("fullscreen")` is `{ transcriptWrite: false, frameBounded: true }`; `screenCapabilities("regular")` is the inverse.
 - [ ] Write the discipline guard test.
 - [ ] Run `npx vitest run packages/core/src/screen-mode.test.ts packages/core/src/screen-mode-discipline.test.ts`
   - Failed (module missing)? Good. If the guard test passes vacuously, verify the walker found files by asserting a non-zero file count.
-- [ ] Implement `screen-mode.ts`, export from `packages/core/src/index.ts`.
+- [ ] Implement `screen-mode.ts`, and add `"./screen-mode": "./src/screen-mode.ts"` to the `exports` map in `packages/core/package.json` — **not** to `src/index.ts`, which only ever exports `registerCore` and the default factory.
 - [ ] Re-run — green? Then `cd packages/core && npx tsc --noEmit`.
 - [ ] Gate `packages/ui` startup on the capability; re-run `cd packages/ui && npx tsc --noEmit` and `pnpm test`.
 - [ ] Manual check, both modes: `pi --tui-mode regular` shows splash + listing; plain `pi` (fullscreen default) shows the header but no splash/listing and no error. If the fullscreen run still shows a splash, the gate is reading a cached value — fix that, do not accept it.
@@ -208,7 +210,8 @@ The `\w*tui\w*` widening is not pedantry: `packages/ui/src/index.ts:54` declares
 **Acceptance criteria:**
 - [ ] `screenMode()` is the only place `isViewportTUI` is called in the suite.
 - [ ] Splash and startup listing appear on regular screen and are absent on fullscreen screen, with no warning in either.
-- [ ] Guard test present, walking a non-empty file set, with an empty allow-list.
+- [ ] On fullscreen screen the retained header is *finished*, not frozen: the logo at `LOGO_SETTLE_FRAME`, no listing, and no padding to terminal height. Assert it through the real `renderHeader`, not a stub — a stubbed header cannot see a frozen animation.
+- [ ] Guard test present and walking a non-empty file set, with an allow-list that contains **only** the entries Task 8 removes — today that is the single `let uiTui` in `packages/ui/src/index.ts`, which Task 8 deletes along with the startup `addChild` patch it exists to un-patch. (An empty allow-list was never reachable inside Task 3: the stored renderer it exempts is out of scope until Task 8.)
 - [ ] `sections.ts` no longer asserts a fixed section list.
 
 ---

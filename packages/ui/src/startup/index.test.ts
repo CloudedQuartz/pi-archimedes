@@ -34,7 +34,9 @@ vi.mock("./version.js", () => ({
 // ── Imports ──────────────────────────────────────────────────────────────────
 
 import { Text, Container } from "@earendil-works/pi-tui";
-import { patchStartupListing, renderHeader, type ListingRef } from "./index.js";
+import { stripAnsi } from "@pi-archimedes/core/text";
+import { patchStartupListing, renderHeader, settleHeader, CONTENT_ONLY_HEIGHT, type ListingRef } from "./index.js";
+import { LOGO, LOGO_SETTLE_FRAME } from "./logo.js";
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -148,6 +150,25 @@ describe("patchStartupListing section parsing", () => {
 		expect((resources as any).children.length).toBe(0);
 	});
 
+	it("does not swallow a pi diagnostic whose body mentions a bracketed word", () => {
+		const { tui, resources } = makeTui();
+		lastResources = resources;
+		const ref = makeRef();
+		patchStartupListing(tui, THEME, ref);
+
+		// pi's own `[Extension issues]` warning: its title is out of the
+		// section shape, but its body is arbitrary text from the failing
+		// extension. Reading "[Broken]" as a header here would hide the error.
+		const comp = makeSectionComponent([
+			"[Extension issues]",
+			"  Cannot find module '/tmp/[Broken]/index.ts'",
+		]);
+		resources.addChild(comp);
+
+		expect((resources as any).children).toContain(comp);
+		expect(ref.sections).toEqual([]);
+	});
+
 	it("passes non-section text through to the original addChild", () => {
 		const { tui, resources } = makeTui();
 		lastResources = resources;
@@ -171,6 +192,86 @@ describe("patchStartupListing section parsing", () => {
 		resources.addChild(makeSectionComponent(["[Skills]", "  beta, gamma"]));
 
 		expect(ref.sections).toEqual([{ name: "Skills", items: ["alpha", "beta", "gamma"] }]);
+	});
+});
+
+describe("renderHeader section set", () => {
+	// The rendered set is whatever the addChild patch captured — pi decides
+	// which sections exist, so nothing here may assert a fixed list.
+	const linesFor = (sections: ListingRef["sections"]): string[] =>
+		renderHeader(THEME, { ...makeRef(), sections }, 200, 60);
+
+	it("renders captured sections in capture order", () => {
+		// pi 1.2.0 emits Context, Skills, Prompts, Extensions — note Skills
+		// before Prompts, which a hardcoded display order used to invert.
+		const lines = linesFor([
+			{ name: "Context", items: ["AGENTS.md"] },
+			{ name: "Skills", items: ["tdd"] },
+			{ name: "Prompts", items: ["/commit"] },
+			{ name: "Extensions", items: ["archimedes"] },
+		]);
+		const at = (name: string) => lines.findIndex((l) => l.includes(`[${name}]`));
+		expect(at("Context")).toBeGreaterThanOrEqual(0);
+		expect(at("Context")).toBeLessThan(at("Skills"));
+		expect(at("Skills")).toBeLessThan(at("Prompts"));
+		expect(at("Prompts")).toBeLessThan(at("Extensions"));
+	});
+
+	it("renders a section name the suite has never seen before", () => {
+		const lines = linesFor([{ name: "Widgets", items: ["gauge"] }]);
+		expect(lines.some((l) => l.includes("[Widgets]"))).toBe(true);
+		expect(lines.some((l) => l.includes("gauge"))).toBe(true);
+	});
+
+	it("renders nothing but the version block when no section was captured", () => {
+		const lines = linesFor([]);
+		for (const phantom of ["Models", "Context", "Prompts", "Skills", "Extensions", "Themes"]) {
+			expect(lines.some((l) => l.includes(`[${phantom}]`))).toBe(false);
+		}
+	});
+
+	it("skips a captured section whose item list is empty", () => {
+		const lines = linesFor([
+			{ name: "Skills", items: [] },
+			{ name: "Context", items: ["AGENTS.md"] },
+		]);
+		expect(lines.some((l) => l.includes("[Skills]"))).toBe(false);
+		expect(lines.some((l) => l.includes("[Context]"))).toBe(true);
+	});
+});
+
+describe("settleHeader", () => {
+	// The state a frame-bounded screen hands to renderHeader when the splash is
+	// suppressed: nothing will animate it, so it must already be finished.
+	it("leaves the ref where a completed splash would, not at frame 0", () => {
+		const ref: ListingRef = {
+			...makeRef(),
+			frame: 3,
+			sections: [{ name: "Skills", items: ["tdd"] }],
+			cachedLines: ["stale"],
+			cachedWidth: 80,
+			cachedHeight: 24,
+		};
+
+		settleHeader(ref);
+
+		expect(ref.frame).toBe(LOGO_SETTLE_FRAME);
+		expect(ref.revealed).toBe(false);
+		expect(ref.sections).toEqual([]);
+		expect(ref.cachedLines).toBeUndefined();
+	});
+
+	it("renders the logo at rest with no listing and no stray blank rows", () => {
+		const ref: ListingRef = { ...makeRef(), frame: 0, revealed: false };
+		settleHeader(ref);
+
+		const lines = renderHeader(THEME, ref, 200, CONTENT_ONLY_HEIGHT);
+
+		// Logo rows plus their separator — and, unlike frame 0, actually drawn.
+		// (Stripped: a truecolor logo colours each block character separately.)
+		expect(lines).toHaveLength(LOGO.length + 1);
+		expect(stripAnsi(lines.join("\n"))).toContain("████");
+		expect(lines.filter((l) => l.includes("[") && l.includes("]"))).toEqual([]);
 	});
 });
 
