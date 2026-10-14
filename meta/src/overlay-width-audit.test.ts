@@ -94,12 +94,13 @@ function audit(surface: string, frameWidth: number, lines: string[]): Violation[
 // ── Capture content checks ───────────────────────────────────────────────────
 //
 // A width audit only proves something if the captured frame is the frame it means
-// to measure. List search accepts printable ASCII only (`isPrintableChar` in
+// to measure. List search accepts printable ASCII only (`isAsciiPrintable` in
 // settings-manager.ts: `data.length === 1 && data >= " " && data <= "~"`), while
-// the free-text prompt field uses `isPromptTextChar`, which takes any single
-// non-control code point — so a wide-character prompt is real content and a
-// wide-character search query is not reachable at all. Each capture therefore
-// declares the content it expects and is checked before the frame is measured.
+// the free-text prompt field is pi-tui's `Input`, which takes any non-control
+// input including wide characters — so a wide-character prompt is real content
+// and a wide-character search query is not reachable at all. Each capture
+// therefore declares the content it expects and is checked before the frame is
+// measured.
 
 /** Drawn text of the search row, border and padding removed, or undefined. */
 function searchRow(raw: string[]): string | undefined {
@@ -196,10 +197,10 @@ describe("overlay surfaces frame-width audit", () => {
         return null;
       });
 
-      // Prompt mode takes wide input (isPromptTextChar), so the value the audit
-      // types really does land in the drawn frame. On the narrowest frame the value
-      // fills the row, so its tail — and the zero-width cursor behind it — are cut
-      // onto the frame instead of overflowing it.
+      // Prompt mode takes wide input (its field is pi-tui's `Input`), so the
+      // value the audit types really does land in the drawn frame. On the
+      // narrowest frame the value fills the row, so its tail — and the zero-width
+      // cursor behind it — are cut onto the frame instead of overflowing it.
       const prompting = makeManager();
       prompting.handleInput("\x1b[B"); // down to the free-text "model" row
       prompting.handleInput("\x1b[B");
