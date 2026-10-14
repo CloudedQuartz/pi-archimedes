@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-10-14
-verified-by: "npx vitest run — packages/image-paste/src/keybinding-offer.test.ts (155 tests: gate matrix, return contract, auto-reload fallback + branch ordering, updateConfig concurrency, generated $schema, the offer text and the untouched warning) + packages/image-paste/src/shortcut-gate.test.ts (9 tests: the paste shortcut is not registered while suppressNativePaste is false, per session) + meta/src/factory-lifecycle.test.ts (13 tests: merged first-run handler wiring + sequencing). Live capture 2026-10-14 against pi 1.2.0 in a scratch PI_CODING_AGENT_DIR."
+verified-by: "npx vitest run — packages/image-paste/src/keybinding-offer.test.ts (163 tests: gate matrix, return contract, auto-reload fallback + branch ordering, updateConfig concurrency, generated $schema, the offer text, the accept-set and its edges, and one refusal test per refuse reason for the untouched warning) + packages/image-paste/src/shortcut-gate.test.ts (9 tests: the paste shortcut is not registered while suppressNativePaste is false, per session) + meta/src/factory-lifecycle.test.ts (13 tests: merged first-run handler wiring + sequencing) + meta/src/readme-agreement.test.ts (5 tests: README.md and meta/README.md agree on what the suite writes to keybindings.json). Live capture 2026-10-14 against pi 1.2.0 in a scratch PI_CODING_AGENT_DIR."
 ---
 
 # First-run keybinding offer
@@ -164,15 +164,26 @@ below) and does not give anyone their key back:
    `{}`. Accept-set: the artefact in either of its two shapes (pre-#123 single
    key, current `$schema` + unbinding pair). Anything else — extra key, foreign
    `$schema`, non-empty binding, unparsable or unreadable file — is left
-   byte-for-byte alone and the user gets one warning naming the line to delete,
-   now also saying that image-paste is not binding the paste key either. The
-   warning adds that the key "does nothing until you do", which holds only when
-   the refused file still carries the `[]` unbinding — a refused file that never
-   disabled `app.clipboard.pasteImage` (only `$schema`, only foreign keys, or
-   JSON that does not parse, which Pi's loader discards) leaves Pi's native paste
-   live on its default key, and a user told to delete an entry that is not there
-   is being sent on an errand. The string is pinned by `keybinding-offer.test.ts`,
-   so narrowing it is a behaviour change, tracked as a follow-up.
+   byte-for-byte alone, and the one warning it produces branches on the refusal
+   (issue #127) instead of ordering every file to delete an entry:
+
+   * still carries our `[]` (a foreign key beside it, or a write that failed) →
+     remove that entry and run `/reload`; until it goes nothing answers the key,
+     because `suppressNativePaste: false` took our shortcut with it;
+   * `app.clipboard.pasteImage` bound by the user → the same instruction, but
+     named as **their** binding, and the key is not called dead (their binding
+     answers it);
+   * foreign keys only, or `$schema` only → nothing of ours to clean up and
+     nothing for the user to edit: Pi's own paste already answers the key on its
+     default binding, so no reload is asked for;
+   * unreadable, unparsable, not a JSON object → the file is named, the cause is
+     named, and the reading is handed back to the user ("check the file, run
+     `/reload` if you change it") — no entry is named, because none can be seen.
+
+   Every variant names the file path, and `diag` carries the reason on every
+   outcome. Each is pinned by name in `keybinding-offer.test.ts` ("the refuse
+   warning says what this file actually holds"), so re-merging them into one
+   string is a test failure rather than a silent regression.
    Idempotent by content: a file that already reads `{}` is reported without a
    rewrite.
 2. **The key.** `registerImagePaste` reads the same setting

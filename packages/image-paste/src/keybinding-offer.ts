@@ -320,9 +320,11 @@ export async function offerKeybindingFix(ctx: ExtensionContext): Promise<boolean
 // docs/decisions/0030-image-paste-superset-not-supplement.md § Amendment.
 
 /**
- * Why a file was left alone. All of these mean the same thing to the user —
- * "this one is yours, here is the line to delete" — but the distinction is
- * worth keeping in the diagnostic.
+ * Why a file was left alone. The five are NOT the same five files, and the
+ * warning no longer pretends otherwise (issue #127): `binding-not-empty` and an
+ * `extra-key` file that also still carries our `[]` hold an entry the user can
+ * delete, while foreign-keys-only / `$schema`-only files hold none, and the three
+ * unreadable shapes cannot be inspected at all. `manualEdit` branches on this.
  */
 export type UntouchedReason =
   /** Valid JSON that is not an object (an array, a string, a number…). */
@@ -344,7 +346,8 @@ export type RestoreNativePasteStatus =
   | { kind: "already-restored"; path: string }
   /** Our artefact was removed and `{}` written; pi must re-read the file. */
   | { kind: "restored"; path: string; reloadRequired: boolean }
-  /** Left byte-for-byte alone; `manualEdit` is the one-line fix. */
+  /** Left byte-for-byte alone; `manualEdit` is what to do about it — for the
+   *  refusals that hold one, the entry to remove; for the rest, no errand. */
   | { kind: "untouched"; path: string; reason: UntouchedReason; manualEdit: string }
   /**
    * The rewrite itself failed (EACCES, EISDIR, ENOSPC…); the file is intact.
@@ -391,12 +394,94 @@ function claimRestoreNotice(): boolean {
   return true;
 }
 
-/** The one-line manual edit for a file the extension must not touch. */
-function manualEditLine(path: string): string {
+/**
+ * The instruction for the one refusal that really does hold our unbinding: the
+ * entry is in there, removing it is the fix, and until it goes nothing answers
+ * the key (the file empties it and `suppressNativePaste: false` took our
+ * shortcut). Shared by the `extra-key`-with-unbinding refusal and by `failed`,
+ * whose file is our artefact.
+ */
+function removeOurEntryGuidance(path: string): string {
   return (
     `To give the paste key back to pi, remove the "${UNBIND_KEY}" entry from ` +
-    `${path} and run /reload.`
+    `${path} and run /reload. ` +
+    "image-paste is not binding the paste key either (suppressNativePaste is off), " +
+    "so that key does nothing until you do."
   );
+}
+
+/**
+ * The guidance line for a file the extension must not touch, naming the path and
+ * saying only what this file actually supports (issue #127).
+ *
+ * One warning used to cover every refusal, and it ordered the user to "remove the
+ * `app.clipboard.pasteImage` entry" — true only when such an entry is in there.
+ * For a file of foreign keys, a `$schema`-only file, and the three shapes we
+ * cannot read, that instruction sends someone hunting a line that is not in the
+ * file, in a file that needs no edit at all. So the wording branches:
+ *
+ * * `binding-not-empty` — an entry IS there, and removing it is still how the key
+ *   gets back to pi, but it is the user's own binding, so it is named as theirs
+ *   and the key is not called dead (their binding answers it).
+ * * `extra-key` holding our `[]` (`hasUnbinding`) — the original wording, and the
+ *   only case where "that key does nothing until you do" is also true.
+ * * `extra-key` without it — nothing of ours to clean up, nothing to edit, and pi
+ *   already answers the key, so no reload is asked for either.
+ * * the three unreadable shapes — the file is named, the cause is named, and the
+ *   reading is handed back to the user; no entry is named because none can be seen.
+ *
+ * `hasUnbinding` is the one fact the reason alone cannot carry: `extra-key` covers
+ * both "foreign keys beside our `[]`" and "foreign keys, no unbinding at all",
+ * which need opposite instructions. The other reasons ignore it.
+ */
+function guidanceLine(path: string, reason: UntouchedReason, hasUnbinding: boolean): string {
+  switch (reason) {
+    case "binding-not-empty":
+      return (
+        `The "${UNBIND_KEY}" binding in ${path} is yours, not something this suite ` +
+        "wrote, so it is yours to hand back: remove that entry and run /reload. " +
+        "image-paste is not binding the paste key either (suppressNativePaste is off)."
+      );
+    case "extra-key":
+      if (hasUnbinding) return removeOurEntryGuidance(path);
+      return (
+        `Nothing in ${path} was written by this suite and nothing in it clears ` +
+        "pi's paste binding, so there is nothing of ours to clean up and nothing " +
+        "for you to edit — pi's own paste answers that key. image-paste registers " +
+        "no paste shortcut of its own while suppressNativePaste is off."
+      );
+    case "unreadable":
+    case "unparsable":
+    case "not-an-object": {
+      const cause =
+        reason === "unreadable"
+          ? "it could not be read"
+          : reason === "unparsable"
+            ? "it does not parse as JSON"
+            : "it is not a JSON object";
+      return (
+        `The file is left exactly as it is; ${cause}, so we cannot tell what the ` +
+        `paste key is bound to — please check ${path} yourself, and run /reload if ` +
+        "you change it. image-paste registers no paste shortcut of its own while " +
+        "suppressNativePaste is off."
+      );
+    }
+  }
+}
+
+/** The guidance for a file we read, derived from the same facts the reason is. */
+function guidanceForReadFile(
+  path: string,
+  obj: Record<string, unknown>,
+  reason: UntouchedReason,
+): string {
+  const binding = obj[UNBIND_KEY];
+  return guidanceLine(path, reason, Array.isArray(binding) && binding.length === 0);
+}
+
+/** The guidance for a file we never got far enough with to inspect. */
+function guidanceForUnreadableFile(path: string, reason: UntouchedReason): string {
+  return guidanceLine(path, reason, false);
 }
 
 function agentKeybindingsPath(): string {
@@ -444,8 +529,9 @@ function isSuiteOwnedUnbinding(obj: Record<string, unknown>): boolean {
  *   *removes* the key — the result is `{}`.
  * * Anything else — extra keys, a non-empty binding, a foreign `$schema`, a
  *   file that does not parse or cannot be read — is left byte-for-byte alone,
- *   and the returned `"untouched"` status carries the path plus the one-line
- *   edit the user must make themselves.
+ *   and the returned `"untouched"` status carries the path plus the guidance
+ *   that refusal warrants ({@link guidanceLine}) — the entry to remove only when
+ *   an entry really is in there.
  * * Idempotent by content: `{}` is reported as `"already-restored"` **without a
  *   rewrite**, so the flag cannot touch a user file on every session start.
  * * Writes atomically through {@link writeAtomicPreservingSymlinks}, so a
@@ -464,17 +550,32 @@ export function restoreNativePaste(): RestoreNativePasteStatus {
   try {
     raw = readFileSync(path, "utf-8");
   } catch {
-    return { kind: "untouched", path, reason: "unreadable", manualEdit: manualEditLine(path) };
+    return {
+      kind: "untouched",
+      path,
+      reason: "unreadable",
+      manualEdit: guidanceForUnreadableFile(path, "unreadable"),
+    };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { kind: "untouched", path, reason: "unparsable", manualEdit: manualEditLine(path) };
+    return {
+      kind: "untouched",
+      path,
+      reason: "unparsable",
+      manualEdit: guidanceForUnreadableFile(path, "unparsable"),
+    };
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return { kind: "untouched", path, reason: "not-an-object", manualEdit: manualEditLine(path) };
+    return {
+      kind: "untouched",
+      path,
+      reason: "not-an-object",
+      manualEdit: guidanceForUnreadableFile(path, "not-an-object"),
+    };
   }
 
   const obj = parsed as Record<string, unknown>;
@@ -490,13 +591,25 @@ export function restoreNativePaste(): RestoreNativePasteStatus {
       UNBIND_KEY in obj && !(Array.isArray(binding) && binding.length === 0)
         ? "binding-not-empty"
         : "extra-key";
-    return { kind: "untouched", path, reason, manualEdit: manualEditLine(path) };
+    return {
+      kind: "untouched",
+      path,
+      reason,
+      manualEdit: guidanceForReadFile(path, obj, reason),
+    };
   }
 
   try {
     writeAtomicPreservingSymlinks(path, "{}");
   } catch (error) {
-    return { kind: "failed", path, error: messageOf(error), manualEdit: manualEditLine(path) };
+    // The file IS our artefact — that is the only way to reach a write — so the
+    // unbinding really is in there and removing it really is the fix.
+    return {
+      kind: "failed",
+      path,
+      error: messageOf(error),
+      manualEdit: removeOurEntryGuidance(path),
+    };
   }
   return { kind: "restored", path, reloadRequired: true };
 }
@@ -565,26 +678,22 @@ export async function runNativePasteRestore(
   );
 
   if (status.kind === "untouched" || status.kind === "failed") {
-    // Both mean "we did not touch it, and only you can" — one actionable
-    // warning naming the path plus the key, spent at most once per process, and
-    // saying plainly that the paste key is unbound in the meantime (the
-    // shortcut gate is off for this same setting, so nothing answers it).
-    // NOTE the deliberate corner: a file holding only foreign keys and no
-    // `app.clipboard.pasteImage` entry lands here too (pi's action is already
-    // live in that case). We still never touch the file, and the message names
-    // the entry to delete rather than asserting it is present.
+    // "We did not touch it" — one actionable warning naming the path, spent at
+    // most once per process. What it asks of the user comes from the status
+    // itself (`manualEdit`, i.e. {@link guidanceLine}), because the five
+    // refusals are not the same five files: only a file that still holds an
+    // `app.clipboard.pasteImage` entry has anything to delete, and issue #127 is
+    // the warning that used to order all of them to go look for one.
     if (ctx.hasUI && claimRestoreNotice()) {
       const failure =
         status.kind === "failed" ? `The write failed (${status.error}). ` : "";
-      // The second sentence is the new half of the promise: with the flag off
-      // image-paste registers NO paste shortcut, so a file we may not rewrite
-      // leaves the key unbound by anyone. Without it the warning reads like
-      // "nothing changed", and a dead Ctrl+V looks like a broken extension
-      // rather than the state the setting describes.
+      // `manualEdit` carries the second half of the promise too — that with the
+      // flag off image-paste registers NO paste shortcut — worded per refusal:
+      // "that key does nothing until you do" only where the file really does
+      // leave the key unbound, "pi's own paste answers that key" where it does
+      // not, and "we cannot tell, check the file" where we cannot read it.
       ctx.ui.notify(
-        `image-paste did not change ${status.path}. ${failure}${status.manualEdit} ` +
-          "image-paste is not binding the paste key either (suppressNativePaste is off), " +
-          "so that key does nothing until you do.",
+        `image-paste did not change ${status.path}. ${failure}${status.manualEdit}`,
         "warning",
       );
     }

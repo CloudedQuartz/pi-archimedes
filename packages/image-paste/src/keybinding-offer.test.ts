@@ -56,6 +56,7 @@ const {
 import type {
   NativePasteRestoreOutcome,
   RestoreNativePasteStatus,
+  UntouchedReason,
 } from "./keybinding-offer.js";
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -779,7 +780,12 @@ describe("restoreNativePaste — the accept-set (only our own artefact is rewrit
 
     const untouched = asUntouched(status!);
     expect(untouched.reason).toBe("unreadable");
-    expect(untouched.manualEdit).toContain(UNBIND_KEY);
+    // Issue #127: the file could not be read, so nothing in it can be named.
+    // The guidance names the file and hands the reading back to the user — it
+    // does not order them to delete an entry we never saw.
+    expect(untouched.manualEdit).toContain(keybindingsPath());
+    expect(untouched.manualEdit).not.toContain(UNBIND_KEY);
+    expect(untouched.manualEdit).not.toMatch(/remove|delete/i);
     expect(fs.statSync(keybindingsPath()).isDirectory()).toBe(true);
   });
 
@@ -941,7 +947,12 @@ describe("restoreNativePaste — accept-set edges (measured)", () => {
     const status = asUntouched(restoreNativePaste());
 
     expect(status.reason).toBe("unparsable");
-    expect(status.manualEdit).toContain(UNBIND_KEY);
+    // Same as the unreadable case (issue #127): bytes that do not parse cannot
+    // tell us what the key is bound to, so the guidance says "check this file"
+    // rather than naming a line to delete.
+    expect(status.manualEdit).toContain(keybindingsPath());
+    expect(status.manualEdit).not.toContain(UNBIND_KEY);
+    expect(status.manualEdit).not.toMatch(/remove|delete/i);
     // Byte-for-byte, BOM included.
     expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(bommed);
   });
@@ -1185,6 +1196,11 @@ describe("runNativePasteRestore — the caller surfaces the outcome (once per pr
     // paste shortcut either, so between the warning and the user's edit the key
     // does NOTHING. Saying only "remove the entry and run /reload" would let
     // the user conclude that image-paste broke the key.
+    //
+    // Scoped deliberately to the refusal where that sentence is TRUE — a file
+    // that still carries our `[]` unbinding. The no-entry refusals assert the
+    // opposite wording (see "the refuse warning says what this file actually
+    // holds").
     askForNativePaste();
     const foreign = `{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`;
     writeKeybindings(foreign);
@@ -1449,5 +1465,189 @@ describe("runNativePasteRestore — the caller surfaces the outcome (once per pr
     expect(first.notify).toHaveBeenCalledTimes(1);
     expect(second.notify).not.toHaveBeenCalled();
     expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(foreign);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// The wording of the refuse warning, per refusal (issue #127)
+// ══════════════════════════════════════════════════════════════════════════
+//
+// ONE warning covers five refusals, and they are five different files. Only two
+// of them actually hold an `app.clipboard.pasteImage` entry the user could
+// delete:
+//
+//   * `extra-key` WITH our `[]` still sitting beside a foreign key — delete it
+//     and pi's paste comes back, and until then nothing answers the key, because
+//     the entry is empty AND `suppressNativePaste: false` took our shortcut;
+//   * `binding-not-empty` — the entry is there but it is the USER's binding, so
+//     the wording has to say whose it is, and cannot claim the key is dead.
+//
+// The other refusals hold no such entry at all: foreign keys only, `$schema`
+// only (`extra-key`), JSON that is not an object, JSON that does not parse, and
+// a file that cannot be read. There the instruction "remove the
+// `app.clipboard.pasteImage` entry and run /reload" sends the user looking for a
+// line that is not in the file, in a file that needs no edit at all — and for the
+// two readable ones among them pi is already answering the paste key. So every
+// refusal is pinned on its own: the warning always names the file, and it only
+// tells the user to delete something when there is something to delete.
+
+describe("runNativePasteRestore — the refuse warning says what this file actually holds", () => {
+  beforeEach(clearNoticeGuard);
+
+  /**
+   * Refuse `raw`, and return the one warning the caller notified.
+   *
+   * The shared shape of EVERY refusal lives here, because it is the same for all
+   * five: exactly one notify, at `"warning"`, naming the file path, on one line,
+   * and the status behind it carrying the reason the wording branches on.
+   */
+  async function warningFor(raw: string, reason: UntouchedReason): Promise<string> {
+    askForNativePaste();
+    writeKeybindings(raw);
+    const { ctx, notify } = makeCtx("tui");
+
+    const outcome = await runNativePasteRestore(ctx);
+
+    if (outcome.kind !== "untouched") {
+      return expect.fail(`expected "untouched", got "${outcome.kind}"`);
+    }
+    expect(outcome.reason, "the reason the wording branches on").toBe(reason);
+    expect(notify).toHaveBeenCalledTimes(1);
+    const [message, level] = notify.mock.calls[0] as [string, string];
+    expect(level).toBe("warning");
+    expect(message).toContain(keybindingsPath());
+    expect(message).not.toContain("\n");
+    expect(outcome.manualEdit).toContain(keybindingsPath());
+    return message;
+  }
+
+  // ── the two refusals where an entry really is in the file ────────────────
+
+  it("extra-key WITH our [] entry: the one case where naming the entry to delete is true, and the key is genuinely dead until it goes", async () => {
+    const message = await warningFor(
+      `{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`,
+      "extra-key",
+    );
+
+    expect(message).toContain(UNBIND_KEY);
+    expect(message).toMatch(/remove the .*entry/i);
+    expect(message).toMatch(/\/reload/);
+    expect(message).toMatch(/not binding the paste key/i);
+    expect(message).toMatch(/does nothing/i);
+  });
+
+  it("binding-not-empty: the entry is named, but as the user's OWN binding, and the key is not called dead", async () => {
+    // The user wrote `"app.clipboard.pasteImage": ["ctrl+v"]`. Handing the key
+    // to pi still means deleting that line, so the instruction is right — but it
+    // is their line, not ours, and something (their own binding) does answer the
+    // key today, so "does nothing until you do" would be false here.
+    const message = await warningFor(`{ "${UNBIND_KEY}": ["ctrl+v"] }`, "binding-not-empty");
+
+    expect(message).toContain(UNBIND_KEY);
+    expect(message).toMatch(/your/i);
+    expect(message).toMatch(/remove/i);
+    expect(message).toMatch(/\/reload/);
+    expect(message).not.toMatch(/does nothing/i);
+  });
+
+  // ── the refusals where there is nothing of ours to remove ────────────────
+
+  it("extra keys but no app.clipboard.pasteImage entry: nothing of ours to remove, nothing to edit, pi already answers the key", async () => {
+    const message = await warningFor(
+      `{ "app.editor.newLine": ["ctrl+enter"] }`,
+      "extra-key",
+    );
+
+    // No instruction to delete anything — there is nothing to delete.
+    expect(message).not.toMatch(/remove|delete/i);
+    expect(message).toMatch(/nothing for you to edit/i);
+    expect(message).toMatch(/pi's own paste answers that key/i);
+    // And no reload is demanded: a file that needs no edit needs no reload.
+    expect(message).not.toMatch(/\/reload/);
+  });
+
+  it("a $schema-only file is the same refusal: no entry of ours, so no errand", async () => {
+    const message = await warningFor(`{ "$schema": "${SCHEMA_URL}" }`, "extra-key");
+
+    expect(message).not.toMatch(/remove|delete/i);
+    expect(message).toMatch(/nothing for you to edit/i);
+    expect(message).toMatch(/pi's own paste answers that key/i);
+    expect(message).not.toMatch(/\/reload/);
+  });
+
+  // ── the refusals where the file cannot be read for advice ────────────────
+
+  it("JSON that is not an object: left untouched, the file named, the user asked to check it — no entry named", async () => {
+    const message = await warningFor(`["${UNBIND_KEY}"]`, "not-an-object");
+
+    expect(message).toMatch(/not a JSON object/i);
+    expect(message).toMatch(/check .*yourself/i);
+    expect(message).toMatch(/\/reload/);
+    // Neither an entry nor a deletion is named: we cannot see one to name.
+    expect(message).not.toContain(UNBIND_KEY);
+    expect(message).not.toMatch(/remove|delete/i);
+  });
+
+  it("JSON that does not parse: left untouched, the file named, the user asked to check it — no entry named", async () => {
+    const message = await warningFor(
+      `{ "${UNBIND_KEY}": [] // hand-edited, not valid JSON`,
+      "unparsable",
+    );
+
+    expect(message).toMatch(/does not parse/i);
+    expect(message).toMatch(/check .*yourself/i);
+    expect(message).toMatch(/\/reload/);
+    expect(message).not.toContain(UNBIND_KEY);
+    expect(message).not.toMatch(/remove|delete/i);
+  });
+
+  it("a file that cannot be read: left untouched, the file named, the user asked to check it — no entry named", async () => {
+    // The helper writes a file, so this refusal is set up by hand — same shape
+    // of assertion: one `"warning"` naming the path, no entry, no deletion.
+    askForNativePaste();
+    fs.mkdirSync(keybindingsPath(), { recursive: true });
+    const { ctx, notify } = makeCtx("tui");
+    try {
+      const outcome = await runNativePasteRestore(ctx);
+
+      if (outcome.kind !== "untouched") {
+        return expect.fail(`expected "untouched", got "${outcome.kind}"`);
+      }
+      expect(outcome.reason).toBe("unreadable");
+      expect(notify).toHaveBeenCalledTimes(1);
+      const [message, level] = notify.mock.calls[0] as [string, string];
+      expect(level).toBe("warning");
+      expect(message).toContain(keybindingsPath());
+      expect(message).toMatch(/could not be read/i);
+      expect(message).toMatch(/check .*yourself/i);
+      expect(message).not.toContain(UNBIND_KEY);
+      expect(message).not.toMatch(/remove|delete/i);
+    } finally {
+      fs.rmSync(keybindingsPath(), { recursive: true, force: true });
+    }
+  });
+
+  it("a failed write still names the entry: the artefact is ours, it is in there, and it is dead until it goes", async () => {
+    // The `failed` status shares the wording with the case above because the
+    // file it refused IS our artefact — the entry is present and pi's paste is
+    // the thing waiting on it.
+    askForNativePaste();
+    writeKeybindings(ARTEFACT_POST_123);
+    const blockedTmp = `${keybindingsPath()}.tmp`;
+    fs.mkdirSync(blockedTmp, { recursive: true });
+    const { ctx, notify } = makeCtx("tui");
+    try {
+      const outcome = await runNativePasteRestore(ctx);
+      expect(outcome.kind).toBe("failed");
+
+      const [message, level] = notify.mock.calls[0] as [string, string];
+      expect(level).toBe("warning");
+      expect(message).toContain(keybindingsPath());
+      expect(message).toContain(UNBIND_KEY);
+      expect(message).toMatch(/remove the .*entry/i);
+      expect(message).toMatch(/does nothing/i);
+    } finally {
+      fs.rmSync(blockedTmp, { recursive: true, force: true });
+    }
   });
 });
