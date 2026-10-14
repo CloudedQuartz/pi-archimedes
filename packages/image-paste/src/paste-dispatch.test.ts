@@ -323,13 +323,89 @@ describe("dispatchClipboardPaste: screen-mode independence", () => {
   // anything reaching for `tui`, an overlay or a component fails it, and the
   // suite-wide renderer-hoarding guard (core/src/screen-mode-discipline.test.ts)
   // covers the stored-reference half.
-  it("uses only screen-safe extension UI surfaces", async () => {
+  //
+  // What is under test is what the dispatch *reads*, so `ctx.ui` is replaced
+  // with a Proxy that records every property access and throws on any name
+  // outside the allow-list. (An earlier version asserted `Object.keys(ctx.ui)`
+  // — the shape of this harness, which the dispatch cannot widen, so a dispatch
+  // that started calling `ctx.ui.setWidget` passed it. Greptile on PR #123;
+  // the mutation `(ctx.ui as …).setStatus?.("k", "v")` in the dispatch turns
+  // these red and left that assertion green.)
+  const SCREEN_SAFE_SURFACES = ["getEditorText", "notify", "pasteToEditor"];
+
+  /** Replace `h.ctx.ui` with a recorder/guard and return the access log. */
+  function guardUiSurfaces(h: Harness): string[] {
+    const accessed: string[] = [];
+    const inner = h.ctx.ui as unknown as Record<string, unknown>;
+    (h.ctx as unknown as { ui: unknown }).ui = new Proxy(inner, {
+      get(target, property: string | symbol): unknown {
+        if (typeof property !== "string") return undefined;
+        accessed.push(property);
+        if (!SCREEN_SAFE_SURFACES.includes(property)) {
+          throw new Error(`ctx.ui.${property} is not a screen-safe surface`);
+        }
+        return target[property];
+      },
+    });
+    return accessed;
+  }
+
+  function surfacesUsed(accessed: string[]): string[] {
+    return [...new Set(accessed)].sort();
+  }
+
+  function assertNoGuardTrip(h: Harness): void {
+    // A tripped guard is swallowed by the dispatch's own catch and reported as
+    // a paste failure, so a clean run is part of the assertion.
+    expect(h.notifications.filter(([message]) => message.startsWith("Clipboard paste failed"))).toEqual([]);
+  }
+
+  it("reads only pasteToEditor and notify on the image branch", async () => {
     const h = createHarness();
+    const accessed = guardUiSurfaces(h);
     mockReadClipboardImage.mockResolvedValue(PNG);
 
     await dispatchClipboardPaste(h.ctx, h.queue);
 
-    const surfaces = new Set(Object.keys(h.ctx.ui as unknown as Record<string, unknown>));
-    expect([...surfaces].sort()).toEqual(["getEditorText", "notify", "pasteToEditor"]);
+    expect(surfacesUsed(accessed)).toEqual(["notify", "pasteToEditor"]);
+    assertNoGuardTrip(h);
+  });
+
+  it("reads only getEditorText and pasteToEditor on the file-path branch", async () => {
+    const h = createHarness({ editorText: "compare" });
+    const accessed = guardUiSurfaces(h);
+    mockReadClipboardImage.mockResolvedValue(null);
+    mockReadClipboardFilePaths.mockResolvedValue(["/tmp/one.txt"]);
+
+    await dispatchClipboardPaste(h.ctx, h.queue);
+
+    expect(surfacesUsed(accessed)).toEqual(["getEditorText", "pasteToEditor"]);
+    assertNoGuardTrip(h);
+  });
+
+  it("reads only pasteToEditor on the text branch", async () => {
+    const h = createHarness();
+    const accessed = guardUiSurfaces(h);
+    mockReadClipboardImage.mockResolvedValue(null);
+    mockReadClipboardFilePaths.mockResolvedValue(null);
+    mockReadClipboardText.mockResolvedValue("plain text");
+
+    await dispatchClipboardPaste(h.ctx, h.queue);
+
+    expect(surfacesUsed(accessed)).toEqual(["pasteToEditor"]);
+    assertNoGuardTrip(h);
+  });
+
+  it("reads no UI surface at all when the clipboard holds nothing", async () => {
+    const h = createHarness();
+    const accessed = guardUiSurfaces(h);
+    mockReadClipboardImage.mockResolvedValue(null);
+    mockReadClipboardFilePaths.mockResolvedValue(null);
+    mockReadClipboardText.mockResolvedValue(null);
+
+    await dispatchClipboardPaste(h.ctx, h.queue);
+
+    expect(accessed).toEqual([]);
+    assertNoGuardTrip(h);
   });
 });
