@@ -399,6 +399,109 @@ describe("startupSplash values", () => {
   });
 });
 
+// ── Turning it off in a process that already drew a splash ─────────────────
+//
+// The gate's comment in `index.ts` claims more than "the next session gets no
+// header": handing the slot back is also what ends a splash that an earlier
+// session in THIS process left animating (`/reload` after turning the setting
+// off). `startSession()` above cannot show that — it registers afresh for every
+// value and never builds a header, so no animation is running when the gated
+// session starts. This block registers ONCE, drives both sessions through the
+// same handler, and models pi's header slot rather than a bare spy:
+// `setExtensionHeader()` disposes the component it is replacing and only then
+// restores `builtInHeader` (`interactive-mode.js:1979-1988` and `:1911` for the
+// session restart). Nothing here calls `stopStartupListing()` by hand, so the
+// handback is the only thing that could stop the timers.
+
+describe("turning the splash off in a process that already drew one", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    stopStartupListing();
+    vi.useRealTimers();
+  });
+
+  it("the handback ends the animation the previous session left running", () => {
+    const listeners: Record<string, ((event: any, ctx: any) => void)[]> = {};
+    const pi = {
+      on: vi.fn((event: string, handler: (event: any, ctx: any) => void) => {
+        listeners[event] = listeners[event] ?? [];
+        listeners[event]!.push(handler);
+      }),
+      registerTool: vi.fn(),
+      registerToolRenderer: vi.fn(),
+      getSettings: vi.fn(() => ({})),
+    } as unknown as ExtensionAPI;
+
+    // pi's header slot: a replacement disposes what it is replacing, then either
+    // builds the new header or puts pi's own back.
+    let installed: { render(width: number): string[]; dispose(): void } | undefined;
+    let slot: "pi" | "ours" = "pi";
+    const requestRender = vi.fn();
+    const tui = { terminal: { rows: 24 }, requestRender } as unknown as TUI;
+    const theme = { fg: (_token: string, text: string) => text } as unknown as Theme;
+    const setHeader = vi.fn((factory?: unknown) => {
+      installed?.dispose();
+      installed =
+        typeof factory === "function"
+          ? (factory as (t: TUI, th: Theme) => typeof installed)(tui, theme)
+          : undefined;
+      slot = installed ? "ours" : "pi";
+    });
+
+    const ctx = {
+      hasUI: true,
+      cwd: "/workspace/test-project",
+      isIdle: () => true,
+      shutdown: vi.fn(),
+      scopedModels: MODEL_SCOPE,
+      ui: {
+        setHeader,
+        setEditorComponent: vi.fn(),
+        setWorkingVisible: vi.fn(),
+        setWorkingIndicator: vi.fn(),
+        setHiddenThinkingLabel: vi.fn(),
+        notify: vi.fn(),
+        theme,
+      },
+    } as unknown as ExtensionContext;
+
+    const session = (uiConfig: Partial<UIConfig>): void => {
+      vi.mocked(loadUIConfig).mockReturnValue({
+        ...DEFAULT_UI_CONFIG,
+        ...uiConfig,
+      } as UIConfig);
+      for (const handler of listeners["session_start"] ?? []) {
+        handler(null, ctx);
+      }
+    };
+
+    registerUI(pi);
+
+    // Session 1: the splash is on, so pi's slot holds our animated header and
+    // the real animation module has its frame and reveal timers armed.
+    session({ startupSplash: true });
+    expect(slot).toBe("ours");
+    expect(vi.getTimerCount()).toBe(2);
+    vi.advanceTimersByTime(200);
+    const renders = requestRender.mock.calls.length;
+    expect(renders).toBeGreaterThan(0);
+
+    // Session 2, same process, same registration: the setting is off now. The
+    // slot is pi's again and the animation that came with the old header is
+    // gone — no timer left armed, nothing left asking the renderer for frames.
+    session({ startupSplash: false });
+    expect(slot).toBe("pi");
+    expect(vi.getTimerCount()).toBe(0);
+
+    vi.advanceTimersByTime(SETTLE_MS);
+    expect(requestRender.mock.calls.length).toBe(renders);
+  });
+});
+
 // ── A splash that is on is still the same splash ───────────────────────────
 //
 // The flag must not change what the splash is, only whether it appears: with it
