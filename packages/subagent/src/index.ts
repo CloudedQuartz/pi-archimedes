@@ -135,6 +135,7 @@ export function registerSubagent(pi: ExtensionAPI): void {
             toolCallId: _id,
           })),
           signal: signal ?? undefined,
+          events: pi.events,
           onUpdate: (progress: SubagentProgress[]) => {
             onUpdate?.({
               content: [],
@@ -214,6 +215,7 @@ export function registerSubagent(pi: ExtensionAPI): void {
           activeModel: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
           cwd: params.cwd ?? undefined,
           signal: signal ?? undefined,
+          events: pi.events,
           toolCallId: _id,
           onUpdate: (progress: SubagentProgress) => {
             onUpdate?.({

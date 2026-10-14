@@ -5,20 +5,22 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Events } from "@pi-archimedes/core/bus";
+import { Events } from "@pi-archimedes/core/events";
 import { registerAskTool } from "./tool.js";
 import { registerIpcRelay } from "./ipc-relay.js";
 import { renderAskCall, renderAskResult } from "./renderer.js";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 //
-// Bus: an in-memory pub/sub whose `emit` is a spy (records + dispatches), so
-// tests can assert on emitted payloads while still letting the relay's
-// `on(ASK_REQUEST)` subscription receive them.
+// events: the host event bus (`pi.events`), an in-memory pub/sub whose `emit` is
+// a spy (records + dispatches), so tests can assert on emitted payloads while
+// still letting the relay's `on(ASK_REQUEST)` subscription receive them. One
+// handle per test — the tool and the relay are handed the same object, exactly
+// as two extensions in one pi process share one bus.
 // Bridge: a mutable state object — `active` flips per test, `ask` is a vi.fn.
 // Picker/dialog: mocked so the TUI branch never touches the real TUI.
 
-const { busState, bridgeState, eventsState } = vi.hoisted(() => {
+const { bridgeState, eventsState } = vi.hoisted(() => {
 	const listeners: Record<string, Array<(p: unknown) => void>> = {};
 	const emit = vi.fn((event: string, payload: unknown) => {
 		for (const fn of listeners[event] ?? []) {
@@ -37,7 +39,6 @@ const { busState, bridgeState, eventsState } = vi.hoisted(() => {
 	};
 	const ask = vi.fn();
 	return {
-		busState: { listeners, emit, on },
 		bridgeState: {
 			active: false,
 			ask,
@@ -45,13 +46,8 @@ const { busState, bridgeState, eventsState } = vi.hoisted(() => {
 			password: vi.fn(),
 			state: vi.fn(() => "idle"),
 		},
-		eventsState: { emit: vi.fn() }, // pi.events — the shared extension event bus
+		eventsState: { emit, on }, // pi.events — the host's shared extension event bus
 	};
-});
-
-vi.mock("@pi-archimedes/core/bus", async (importOriginal) => {
-	const actual = await importOriginal() as typeof import("@pi-archimedes/core/bus");
-	return { ...actual, getBus: () => ({ emit: busState.emit, on: busState.on }) };
 });
 
 vi.mock("@pi-archimedes/core/bridge", () => ({
@@ -103,9 +99,9 @@ function makeParams(): { questions: unknown[] } {
 	};
 }
 
-/** The payloads of the recorded `emit` calls for the given event. */
+/** The payloads of the recorded `emit` calls for the given channel. */
 function emitted(event: string): Record<string, unknown>[] {
-	return busState.emit.mock.calls
+	return eventsState.emit.mock.calls
 		.filter((c) => c[0] === event)
 		.map((c) => c[1]!) as Record<string, unknown>[];
 }
@@ -127,7 +123,6 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-	busState.emit.mockClear();
 	eventsState.emit.mockClear();
 	bridgeState.active = false;
 	bridgeState.ask.mockReset();
@@ -299,8 +294,8 @@ describe("child branch (bridge inactive, no UI)", () => {
 		const result = await tool.execute("tool-2", makeParams(), undefined, undefined, { hasUI: false });
 
 		expect(result.content[0]!.text).toBe("User cancelled the question.");
-		// The child branch does not emit on the bus
-		expect(busState.emit).not.toHaveBeenCalled();
+		// The child branch does not emit on the handle
+		expect(eventsState.emit).not.toHaveBeenCalled();
 	});
 });
 
@@ -365,7 +360,7 @@ describe("TUI branch (bridge inactive, has UI)", () => {
 		const result = await tool.execute("tool-5", { questions: [] }, undefined, undefined, { hasUI: true, ui: {} });
 
 		expect(result.content[0]!.text).toBe("Error: questions must not be empty");
-		expect(busState.emit).not.toHaveBeenCalled();
+		expect(eventsState.emit).not.toHaveBeenCalled();
 		// No dialog shown → no herdr pairing either
 		expect(herdrEmits()).toEqual([]);
 	});
@@ -476,7 +471,7 @@ describe("ipc-relay", () => {
 		registerIpcRelay({ events: eventsState } as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
 		relayUnsubs.push(...unsubscribes);
 
-		busState.emit(Events.ASK_REQUEST, {
+		eventsState.emit(Events.ASK_REQUEST, {
 			source: "subagent:x",
 			requestId: "relay-1",
 			questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }] }],
@@ -498,7 +493,7 @@ describe("ipc-relay", () => {
 		registerIpcRelay({ events: eventsState } as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
 		relayUnsubs.push(...unsubscribes);
 
-		busState.emit(Events.ASK_REQUEST, {
+		eventsState.emit(Events.ASK_REQUEST, {
 			source: "subagent:x",
 			requestId: "relay-2",
 			questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }] }],
@@ -520,7 +515,7 @@ describe("ipc-relay", () => {
 		registerIpcRelay({ events: eventsState } as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
 		relayUnsubs.push(...unsubscribes);
 
-		busState.emit(Events.ASK_REQUEST, {
+		eventsState.emit(Events.ASK_REQUEST, {
 			source: "subagent:x",
 			requestId: "relay-3",
 			questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }] }],
@@ -545,7 +540,7 @@ describe("ipc-relay", () => {
 		registerIpcRelay({ events: eventsState } as unknown as ExtensionAPI, () => ({ ui: {} } as unknown as ExtensionContext), unsubscribes);
 		relayUnsubs.push(...unsubscribes);
 
-		busState.emit(Events.ASK_REQUEST, {
+		eventsState.emit(Events.ASK_REQUEST, {
 			source: "subagent:x",
 			requestId: "relay-4",
 			questions: [{ id: "q1", question: "Which?", options: [{ label: "A" }] }],

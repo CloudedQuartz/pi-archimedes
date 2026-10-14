@@ -1,7 +1,8 @@
 import { createInterface } from "node:readline";
 import type { ChildProcess } from "node:child_process";
+import type { EventBus } from "@earendil-works/pi-coding-agent";
 import type { StreamState, SubagentProgress, SubagentResult } from "./types.js";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import { Events, emitOn } from "@pi-archimedes/core/events";
 import { normalizeTodoItems, pickTodoListRaw } from "@pi-archimedes/todo/prepare-args";
 import {
   type JsonEvent,
@@ -17,6 +18,13 @@ export interface StreamCallbacks {
   agent?: string;
   task?: string;
   onProgress?: (progress: SubagentProgress) => void;
+  /**
+   * The parent's host handle (`pi.events`), injected. `streamEvents` is a plain
+   * function over a child process, so it has no `pi` of its own; the child's
+   * todo state is announced on the handle the caller is holding, which is the
+   * same one the todo package subscribed on in this process.
+   */
+  events: EventBus;
 }
 
 /**
@@ -28,7 +36,7 @@ export interface StreamCallbacks {
  */
 export function streamEvents(
   child: ChildProcess,
-  callbacks: StreamCallbacks = {},
+  callbacks: StreamCallbacks,
 ): Promise<SubagentResult> {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
@@ -176,7 +184,7 @@ export function streamEvents(
               const detailsTodos = (result?.details as Record<string, unknown> | undefined)?.todos;
               const todos = normalizeTodoItems(Array.isArray(detailsTodos) ? detailsTodos : stowed);
               if (todos) {
-                getBus().emit(Events.TODOS_UPDATE, { source: subagentSource, todos });
+                emitOn(callbacks.events, Events.TODOS_UPDATE, { source: subagentSource, todos });
               }
             }
           }
@@ -275,8 +283,8 @@ export function streamEvents(
 
       callbacks.onProgress?.(result.progress!);
 
-      // Clear subagent todos from the bus on exit
-      getBus().emit(Events.TODOS_CLEAR, {
+      // Clear subagent todos from the handle on exit
+      emitOn(callbacks.events, Events.TODOS_CLEAR, {
         source: subagentSource,
       });
 

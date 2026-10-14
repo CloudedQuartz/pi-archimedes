@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { getBus, Events } from "../bus.js";
+import { Events } from "../events.js";
 import {
   getBridge,
   ask,
@@ -57,12 +57,39 @@ function makeFakeCtx(mode: "tui" | "rpc" | "json" | "print"): { mode: string } {
 /** Register the bridge and fire its session_start handler with the given ctx. */
 function registerAndFireSessionStart(ctx: { mode: string }): void {
   const onSpy = vi.fn();
-  registerBridge({ on: onSpy } as unknown as ExtensionAPI);
+  registerBridge({ on: onSpy, events: bus } as unknown as ExtensionAPI);
   const calls = onSpy.mock.calls as Array<[string, (e: unknown, ctx: unknown) => void]>;
   const startCall = calls.find((c) => c[0] === "session_start");
   expect(startCall).toBeTruthy();
   startCall![1](null, ctx);
 }
+
+/**
+ * The host handle the relay subscribes on, stood in for by the same
+ * emit/on/unsubscribe contract pi's `createEventBus()` implements. Per test,
+ * because the relay's subscriptions now live on the handle rather than on a
+ * process-wide singleton.
+ */
+function fakeBus() {
+  const listeners = new Map<string, Array<(data: unknown) => void>>();
+  return {
+    emit(channel: string, data: unknown): void {
+      for (const handler of [...(listeners.get(channel) ?? [])]) handler(data);
+    },
+    on(channel: string, handler: (data: unknown) => void): () => void {
+      const subs = listeners.get(channel) ?? [];
+      subs.push(handler);
+      listeners.set(channel, subs);
+      return () => {
+        const current = listeners.get(channel) ?? [];
+        const idx = current.indexOf(handler);
+        if (idx !== -1) current.splice(idx, 1);
+      };
+    },
+  };
+}
+
+let bus: ReturnType<typeof fakeBus>;
 
 function tempSocketPath(): string {
   return path.join(os.tmpdir(), `bridge-test-${randomUUID()}.sock`);
@@ -109,6 +136,7 @@ function startServer(
 beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   clearBridgeEnv();
+  bus = fakeBus();
   resetChannel();
   resetEvents();
 });
@@ -187,7 +215,7 @@ describe("inactive API", () => {
 
 describe("state machine", () => {
   it("onAgentSettled → idle; onAgentStart → working", () => {
-    start();
+    start(bus);
     onAgentSettled();
     expect(state()).toBe("idle");
     onAgentStart();
@@ -195,41 +223,41 @@ describe("state machine", () => {
   });
 
   it("ASK_REQUEST → blocked; stays blocked through onAgentSettled; ASK_RESPONSE → idle (settled)", () => {
-    start();
+    start(bus);
     onAgentSettled(); // settled = true
-    getBus().emit(Events.ASK_REQUEST, { source: "main", requestId: "r1", questions: [makeQuestion()] });
+    bus.emit(Events.ASK_REQUEST, { source: "main", requestId: "r1", questions: [makeQuestion()] });
     expect(state()).toBe("blocked");
     onAgentSettled(); // still blocked (refcount > 0)
     expect(state()).toBe("blocked");
-    getBus().emit(Events.ASK_RESPONSE, { requestId: "r1", cancelled: false, results: [] });
+    bus.emit(Events.ASK_RESPONSE, { requestId: "r1", cancelled: false, results: [] });
     expect(state()).toBe("idle"); // settled
   });
 
   it("ASK_RESPONSE → working (not settled)", () => {
-    start();
+    start(bus);
     onAgentStart(); // settled = false
-    getBus().emit(Events.ASK_REQUEST, { source: "main", requestId: "r2", questions: [makeQuestion()] });
+    bus.emit(Events.ASK_REQUEST, { source: "main", requestId: "r2", questions: [makeQuestion()] });
     expect(state()).toBe("blocked");
-    getBus().emit(Events.ASK_RESPONSE, { requestId: "r2", cancelled: false, results: [] });
+    bus.emit(Events.ASK_RESPONSE, { requestId: "r2", cancelled: false, results: [] });
     expect(state()).toBe("working"); // not settled
   });
 
   it("an unpaired ASK_RESPONSE does not drive the refcount negative (floor at 0)", () => {
-    start();
+    start(bus);
     onAgentSettled(); // settled = true
     expect(state()).toBe("idle");
 
     // A spurious/duplicated ASK_RESPONSE with no matching ASK_REQUEST must not
     // push the refcount below zero (the floor keeps the machine honest).
-    getBus().emit(Events.ASK_RESPONSE, { requestId: "orphan", cancelled: false, results: [] });
+    bus.emit(Events.ASK_RESPONSE, { requestId: "orphan", cancelled: false, results: [] });
     expect(state()).toBe("idle"); // floor at 0 (not -1)
 
     // A legitimate ask is still blocked (the floor prevented the negative count).
-    getBus().emit(Events.ASK_REQUEST, { source: "main", requestId: "r3", questions: [makeQuestion()] });
+    bus.emit(Events.ASK_REQUEST, { source: "main", requestId: "r3", questions: [makeQuestion()] });
     expect(state()).toBe("blocked");
 
     // ...and it still unblocks cleanly.
-    getBus().emit(Events.ASK_RESPONSE, { requestId: "r3", cancelled: false, results: [] });
+    bus.emit(Events.ASK_RESPONSE, { requestId: "r3", cancelled: false, results: [] });
     expect(state()).toBe("idle"); // settled
   });
 });
@@ -243,13 +271,13 @@ describe("ASK_CANCEL flow", () => {
       /* accept but never respond */
     });
 
-    start();
+    start(bus);
     configure({ active: true, socketPath: sockPath });
 
     const responses: unknown[] = [];
-    const unsub = getBus().on(Events.ASK_RESPONSE, (p) => responses.push(p));
+    const unsub = bus.on(Events.ASK_RESPONSE, (p) => responses.push(p));
 
-    getBus().emit(Events.ASK_REQUEST, {
+    bus.emit(Events.ASK_REQUEST, {
       source: "subagent:x",
       requestId: "sub-req-1",
       questions: [makeQuestion()],
@@ -259,7 +287,7 @@ describe("ASK_CANCEL flow", () => {
     // Give the forwarded request a moment to connect to the (silent) server.
     await new Promise((r) => setTimeout(r, 50));
 
-    getBus().emit(Events.ASK_CANCEL, { requestId: "sub-req-1", source: "subagent:x" });
+    bus.emit(Events.ASK_CANCEL, { requestId: "sub-req-1", source: "subagent:x" });
 
     // The cancel closes the socket → the request rejects → a cancelled ASK_RESPONSE is emitted.
     await vi.waitFor(() => {
@@ -278,8 +306,8 @@ describe("ASK_CANCEL flow", () => {
   });
 
   it("ASK_CANCEL with no pending entry is a no-op (no crash, refcount untouched)", () => {
-    start();
-    getBus().emit(Events.ASK_CANCEL, { requestId: "does-not-exist", source: "subagent:x" });
+    start(bus);
+    bus.emit(Events.ASK_CANCEL, { requestId: "does-not-exist", source: "subagent:x" });
     expect(state()).toBe("working"); // refcount still 0
   });
 });
@@ -684,13 +712,13 @@ describe("subagent ask success path", () => {
     });
     await new Promise<void>((resolve) => server.listen(sockPath, resolve));
 
-    start();
+    start(bus);
     configure({ active: true, socketPath: sockPath });
 
     const responses: unknown[] = [];
-    const unsub = getBus().on(Events.ASK_RESPONSE, (p) => responses.push(p));
+    const unsub = bus.on(Events.ASK_RESPONSE, (p) => responses.push(p));
 
-    getBus().emit(Events.ASK_REQUEST, {
+    bus.emit(Events.ASK_REQUEST, {
       source: "subagent:x",
       requestId: "sub-req-2",
       toolCallId: "child-tool-1",

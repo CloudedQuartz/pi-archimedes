@@ -10,7 +10,7 @@
 // password → "" (cancel).
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AskResponsePayload, AskRequestPayload } from "../bus.js";
+import type { AskResponsePayload, AskRequestPayload } from "../events.js";
 import * as channel from "./channel.js";
 import * as events from "./events.js";
 
@@ -144,16 +144,24 @@ function isBridgeMode(ctx: { mode: string }): boolean {
 }
 
 /**
- * Subscribe the pi EXTENSION events (NOT the bus — nothing emits
- * agent_start/agent_settled/session_start on the bus). The extension events DO
- * fire in RPC mode (the RPC driver runs the same session machinery).
+ * Subscribe the pi EXTENSION events (NOT the channel vocabulary — nothing emits
+ * agent_start/agent_settled/session_start onto the event bus). The extension
+ * events DO fire in RPC mode (the RPC driver runs the same session machinery).
+ *
+ * The relay's own subscriptions are opened at `session_start` (activation is
+ * decided there) and closed at `session_shutdown`, which is registered here at
+ * the top level — never inside the `session_start` handler (AGENTS.md: nested
+ * registration accumulates handlers across `/reload`). It is not just hygiene:
+ * the host drops a runtime's event-bus subscriptions when the runtime is
+ * invalidated, so a relay that never tears down ends up describing itself with
+ * state whose subscriptions no longer exist.
  */
 export function registerBridge(pi: ExtensionAPI): void {
   pi.on("session_start", (_e, ctx) => {
     const active = isBridgeMode(ctx);
     channel.configure({ active, socketPath: process.env.PI_ARCHIMEDES_BRIDGE_SOCKET });
     if (active) {
-      events.start();
+      events.start(pi.events);
       events.onSessionStart(ctx);
     }
   });
@@ -162,5 +170,10 @@ export function registerBridge(pi: ExtensionAPI): void {
   });
   pi.on("agent_settled", () => {
     if (channelActive()) events.onAgentSettled();
+  });
+  // Unconditional: an inactive bridge never subscribed, and stop() on nothing
+  // subscribed is a no-op — the safe direction for a teardown.
+  pi.on("session_shutdown", () => {
+    events.stop();
   });
 }

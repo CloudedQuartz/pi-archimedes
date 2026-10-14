@@ -1,7 +1,7 @@
 import { type Static, StringEnum, Type } from "@earendil-works/pi-ai";
-import type { AgentToolResult, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, EventBus, ExtensionContext, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import { Events, emitOn } from "@pi-archimedes/core/events";
 import { renderToolHeader, renderStatusLabel } from "@pi-archimedes/core/tool-render";
 import { prepareTodoArguments } from "./prepare-args.js";
 import type { TodoStateManager } from "./state-manager.js";
@@ -69,7 +69,16 @@ Todo states:
 IMPORTANT: Mark todos completed as soon as they are done. Do not batch completions.
 When all todos are completed, the list auto-clears after a brief delay.`;
 
-export function createManageTodoListTool(state: TodoStateManager, onUpdate: () => void) {
+/**
+ * Build the `manage_todo_list` tool.
+ *
+ * @param events the caller's host handle (`pi.events`). The tool is a factory,
+ *               not an extension, so it has no `pi` of its own — the handle is
+ *               injected rather than reached for, which is what keeps the suite
+ *               free of a `globalThis` bus. A child pi runs the same tool with
+ *               its OWN handle, and its writes stay inside the child.
+ */
+export function createManageTodoListTool(state: TodoStateManager, onUpdate: () => void, events: EventBus) {
   return {
     name: "manage_todo_list",
     label: "Todo List",
@@ -125,12 +134,11 @@ export function createManageTodoListTool(state: TodoStateManager, onUpdate: () =
       state.write(todoList);
       onUpdate();
 
-      // Emit bus event for widget update
-      try {
-        getBus().emit(Events.TODOS_UPDATE, { source: "main", todos: state.read() });
-      } catch {
-        // Bus may not be initialized in subagent child process — ignore
-      }
+      // Announce the new list on the handle: the bridge relays it to the
+      // desktop as a `todos_update` frame (and any other in-process listener,
+      // e.g. a second todo instance, sees the same payload). `onUpdate()` above
+      // is the local widget path; this is the outward one.
+      emitOn(events, Events.TODOS_UPDATE, { source: "main", todos: state.read() });
 
       const stats = state.getStats();
       const todos = state.read();

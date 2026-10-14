@@ -12,7 +12,7 @@
 
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import { Events } from "@pi-archimedes/core/events";
 import { formatTokenCount } from "./utils/format.js";
 
 // Load the footer's module graph at COLLECT time, before any test starts: the
@@ -82,7 +82,9 @@ afterEach(() => {
   builtFooters = [];
 });
 
-async function installFooter(entries: unknown[]): Promise<{ rendered: (width?: number) => string[]; shutdown: () => void }> {
+async function installFooter(
+  entries: unknown[],
+): Promise<{ rendered: (width?: number) => string[]; shutdown: () => void; bus: ReturnType<typeof fakeBus> }> {
   vi.resetModules();
   vi.doMock("./utils/git.js", () => ({
     getGitStatus: () => ({ staged: 0, unstaged: 0, untracked: 0, ahead: 0, behind: 0 }),
@@ -102,12 +104,18 @@ async function installFooter(entries: unknown[]): Promise<{ rendered: (width?: n
   const { registerFooter } = await import("./index.js");
 
   const handlers: Record<string, (event: unknown, ctx: ExtensionContext) => void> = {};
+  // The handle the footer is handed. It no longer matters what is put on it —
+  // the footer subscribes to nothing — which is exactly what the cost tests below
+  // assert. A handle is passed anyway, because a real `ExtensionAPI` always has
+  // one and a test that omits it would not be shaped like production.
+  const bus = fakeBus();
   const pi = {
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => void) => {
       handlers[event] = handler;
       return () => {};
     },
     getThinkingLevel: () => "off",
+    events: bus,
   } as unknown as ExtensionAPI;
 
   let factory: FooterFactory | undefined;
@@ -140,6 +148,27 @@ async function installFooter(entries: unknown[]): Promise<{ rendered: (width?: n
   return {
     rendered: (width = 200) => footer.render(width),
     shutdown: () => handlers["session_shutdown"]!({}, ctx),
+    bus,
+  };
+}
+
+/** The host event bus, stood in for (`pi.events`). */
+function fakeBus() {
+  const listeners = new Map<string, Array<(data: unknown) => void>>();
+  return {
+    emit(channel: string, data: unknown): void {
+      for (const handler of [...(listeners.get(channel) ?? [])]) handler(data);
+    },
+    on(channel: string, handler: (data: unknown) => void): () => void {
+      const subs = listeners.get(channel) ?? [];
+      subs.push(handler);
+      listeners.set(channel, subs);
+      return () => {
+        const current = listeners.get(channel) ?? [];
+        const idx = current.indexOf(handler);
+        if (idx !== -1) current.splice(idx, 1);
+      };
+    },
   };
 }
 
@@ -217,17 +246,17 @@ describe("the footer counts a subagent's cost once", () => {
     shutdown();
   });
 
-  it("ignores COST_UPDATE bus traffic: there is no accumulator left to double-count", async () => {
+  it("ignores COST_UPDATE traffic on the handle: there is no accumulator left to double-count", async () => {
     // The route this replaced (`subagent/src/cost.ts` → `COST_UPDATE` →
     // `CostAccumulator`) added the same usage a second time on top of the entry
     // scan above — measured at `$0.40` / `↑7.8k` for one child before the
     // removal. Anything still publishing on that channel (the bridge's own
     // self-usage emitter does) must not reach the status bar twice.
-    const { rendered, shutdown } = await installFooter([
+    const { rendered, shutdown, bus } = await installFooter([
       assistantEntry("e1"),
       toolResultEntry("e2", CHILD_USAGE),
     ]);
-    getBus().emit(Events.COST_UPDATE, {
+    bus.emit(Events.COST_UPDATE, {
       source: "subagent:reviewer",
       inputTokens: CHILD_USAGE.input,
       outputTokens: CHILD_USAGE.output,
@@ -240,12 +269,18 @@ describe("the footer counts a subagent's cost once", () => {
     shutdown();
   });
 
-  it("starts a fresh session with nothing carried over from the bus", async () => {
-    // No accumulator, no queue replay: a footer installed after earlier
-    // COST_UPDATE traffic still reports only what the session entries say.
-    getBus().emit(Events.COST_UPDATE, { source: "main", inputTokens: 9999, cost: 9.99 });
+  it("starts a fresh session with nothing carried over from the handle", async () => {
+    // No accumulator and nothing queued behind it: a footer installed after an
+    // earlier session published COST_UPDATE still reports only what the session
+    // entries say. (The retired bus made this a real risk — an unmatched emit
+    // sat in a process-wide queue and replayed into the next subscriber.)
+    const first = await installFooter([assistantEntry("e1")]);
+    first.bus.emit(Events.COST_UPDATE, { source: "main", inputTokens: 9999, cost: 9.99 });
+    first.shutdown();
+
     const { rendered, shutdown } = await installFooter([assistantEntry("e1")]);
     const lines = rendered();
+    expectRendered(lines);
     expect(paintedCost(lines)).toBeUndefined();
     expect(lines.join(" ")).not.toContain("$9.99");
     shutdown();

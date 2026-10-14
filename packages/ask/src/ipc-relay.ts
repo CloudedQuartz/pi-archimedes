@@ -1,5 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import type { EventBus, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Events, emitOn } from "@pi-archimedes/core/events";
 import { getBridge } from "@pi-archimedes/core/bridge";
 import { type AskQuestion, type AskSelection } from "./selection.js";
 import { askSingleQuestionWithInlineNote } from "./picker.js";
@@ -11,7 +11,7 @@ export function registerIpcRelay(
 	getCtx: () => ExtensionContext | undefined,
 	unsubscribes: Array<() => void>,
 ): void {
-	const unsubAskRequest = getBus().on(Events.ASK_REQUEST, async (payload: unknown) => {
+	const unsubAskRequest = pi.events.on(Events.ASK_REQUEST, async (payload: unknown) => {
 		const data = payload as {
 			source: string;
 			requestId: string;
@@ -32,7 +32,7 @@ export function registerIpcRelay(
 
 		// Defer to next tick so TUI can process current state
 		await new Promise((resolve) => setImmediate(resolve));
-		await handleAskRequest(data, getCtx, (active, label) => emitBlocked(pi, active, label));
+		await handleAskRequest(data, getCtx, (active, label) => emitBlocked(pi, active, label), pi.events);
 	});
 	unsubscribes.push(unsubAskRequest);
 }
@@ -44,6 +44,7 @@ async function handleAskRequest(
 	},
 	getCtx: () => ExtensionContext | undefined,
 	reportBlocked: (active: boolean, label?: string) => void,
+	events: EventBus,
 ): Promise<void> {
 	const ctx = getCtx();
 	if (!ctx?.ui) return;
@@ -96,8 +97,8 @@ async function handleAskRequest(
 		customInput: selections[i]?.customInput,
 	}));
 
-	// Emit on bus — parent's streamEvents writes to child socket
-	getBus().emit(Events.ASK_RESPONSE, {
+	// Emit on the handle — the parent's streamEvents writes it to the child socket
+	emitOn(events, Events.ASK_RESPONSE, {
 		requestId: data.requestId,
 		cancelled,
 		results,

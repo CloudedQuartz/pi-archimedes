@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import { Events } from "@pi-archimedes/core/events";
 import { TodoStateManager } from "./state-manager.js";
 import { createManageTodoListTool } from "./tool.js";
 import { normalizeTodoItems } from "./prepare-args.js";
@@ -22,8 +22,13 @@ export function registerTodo(pi: ExtensionAPI): void {
     }
   };
 
-  // Subscribe to bus events for subagent todos
-  const unsubTodosUpdate = getBus().on(Events.TODOS_UPDATE, (payload: unknown) => {
+  // Subscribe on the host handle for subagent todos. Registered here, at
+  // extension-load time, not inside a session handler: the host drops these
+  // subscriptions when the runtime is invalidated, and the factories run again
+  // for the next session, so this is exactly once per session — and it keeps
+  // the subscription live before the first turn, which is when a child can
+  // first report todos. `session_shutdown` below is its counterpart.
+  const unsubTodosUpdate = pi.events.on(Events.TODOS_UPDATE, (payload: unknown) => {
     const data = payload as { source: string; todos: TodoItem[] };
     if (data.source === "main") return; // main handled locally
     // The consumer is the guarantee: producers (subagent stream, older
@@ -40,7 +45,7 @@ export function registerTodo(pi: ExtensionAPI): void {
   });
   unsubscribes.push(unsubTodosUpdate);
 
-  const unsubTodosClear = getBus().on(Events.TODOS_CLEAR, (payload: unknown) => {
+  const unsubTodosClear = pi.events.on(Events.TODOS_CLEAR, (payload: unknown) => {
     const data = payload as { source: string };
     subagentTodos.delete(data.source);
     refreshWidget();
@@ -80,7 +85,7 @@ export function registerTodo(pi: ExtensionAPI): void {
   });
 
   // Register the manage_todo_list tool
-  const tool = createManageTodoListTool(state, refreshWidget);
+  const tool = createManageTodoListTool(state, refreshWidget, pi.events);
   pi.registerTool(tool);
 
   // Register /todos command

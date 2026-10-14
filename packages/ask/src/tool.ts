@@ -1,6 +1,6 @@
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import { Events, emitOn } from "@pi-archimedes/core/events";
 import { getBridge } from "@pi-archimedes/core/bridge";
 import { connect } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -241,7 +241,7 @@ export function registerAskTool(pi: ExtensionAPI): void {
 			// refcount never leaks and the state machine is not stuck at blocked.
 			if (getBridge().active) {
 				const requestId = randomUUID();
-				getBus().emit(Events.ASK_REQUEST, {
+				emitOn(pi.events, Events.ASK_REQUEST, {
 					source: "main",
 					requestId,
 					questions: params.questions,
@@ -258,7 +258,7 @@ export function registerAskTool(pi: ExtensionAPI): void {
 				} catch {
 					response = { cancelled: true, results: params.questions.map((q) => ({ id: q.id, selectedOptions: [] })) };
 				}
-				getBus().emit(Events.ASK_RESPONSE, { requestId, cancelled: response.cancelled, results: response.results });
+				emitOn(pi.events, Events.ASK_RESPONSE, { requestId, cancelled: response.cancelled, results: response.results });
 
 				const results = responseToResults(response, params.questions);
 				if (response.cancelled && results.every((r) => r.selectedOptions.length === 0)) {
@@ -362,8 +362,8 @@ export function registerAskTool(pi: ExtensionAPI): void {
 				};
 			}
 
-			// Emit bus event so notify (if installed) can schedule a desktop notification
-			getBus().emit(Events.ASK_REQUEST, { source: "main", requestId: randomUUID(), questions: params.questions, toolCallId: _toolCallId });
+			// Announce the ask on the handle so notify (if installed) can schedule a desktop notification
+			emitOn(pi.events, Events.ASK_REQUEST, { source: "main", requestId: randomUUID(), questions: params.questions, toolCallId: _toolCallId });
 
 			// Report to herdr's managed extension (inert unless herdr spawned pi — the
 			// event is a no-op otherwise). One pair per dialog; the finally pairs it on

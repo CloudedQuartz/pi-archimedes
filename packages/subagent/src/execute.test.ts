@@ -43,7 +43,9 @@ function activateBridge(socketPath: string): void {
   process.env.PI_ARCHIMEDES_BRIDGE_SESSION = "test-desktop-session";
   process.env.PI_ARCHIMEDES_BRIDGE_SERVER_PID = "12345";
   const onSpy = vi.fn();
-  registerBridge({ on: onSpy } as unknown as ExtensionAPI);
+  // The handle the relay subscribes on — inert here (these tests are about fork
+  // vs dispatch, not about the relay), but a real session always hands one over.
+  registerBridge({ on: onSpy, events: { emit: () => {}, on: () => () => {} } } as unknown as ExtensionAPI);
   const calls = onSpy.mock.calls as Array<[string, (e: unknown, ctx: unknown) => void]>;
   const startCall = calls.find((c) => c[0] === "session_start");
   expect(startCall).toBeTruthy();
@@ -75,6 +77,9 @@ function makeOptions(overrides: Partial<ExecuteOptions> = {}): ExecuteOptions {
     cwd: undefined,
     signal: undefined,
     onUpdate: undefined,
+    // These tests never fork, so the handle is inert — present because a real
+    // ExecuteOptions always carries one.
+    events: { emit: () => {}, on: () => () => {} },
     toolCallId: "tc-1",
     ...overrides,
   };

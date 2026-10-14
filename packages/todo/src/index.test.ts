@@ -9,13 +9,36 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import { Events } from "@pi-archimedes/core/events";
 import { registerTodo } from "./index.js";
+
+/** Stands in for the host's `createEventBus()` (the `pi.events` contract). */
+function fakeBus() {
+  const listeners = new Map<string, Array<(data: unknown) => void>>();
+  return {
+    emit(channel: string, data: unknown): void {
+      for (const handler of [...(listeners.get(channel) ?? [])]) handler(data);
+    },
+    on(channel: string, handler: (data: unknown) => void): () => void {
+      const subs = listeners.get(channel) ?? [];
+      subs.push(handler);
+      listeners.set(channel, subs);
+      return () => {
+        const current = listeners.get(channel) ?? [];
+        const idx = current.indexOf(handler);
+        if (idx !== -1) current.splice(idx, 1);
+      };
+    },
+  };
+}
 
 describe("todo index — bus consumer normalization", () => {
   const captured: Record<string, unknown> = {};
   const handlers: Record<string, Function> = {};
   const registered: { tool?: any; commands: Record<string, unknown> } = { commands: {} };
+
+  /** The handle `registerTodo` subscribes on and the tool emits on. */
+  const bus = fakeBus();
 
   const pi = {
     on(evt: string, fn: Function) {
@@ -27,6 +50,7 @@ describe("todo index — bus consumer normalization", () => {
     registerCommand(name: string, def: unknown) {
       registered.commands[name] = def;
     },
+    events: bus,
   } as unknown as ExtensionAPI;
 
   const ctx = {
@@ -81,7 +105,7 @@ describe("todo index — bus consumer normalization", () => {
     expect(result.isError).toBeFalsy();
 
     // Legacy (old-schema) subagent payload: id/title/not-started.
-    getBus().emit(Events.TODOS_UPDATE, {
+    bus.emit(Events.TODOS_UPDATE, {
       source: "subagent:fake1",
       todos: [{ id: 1, title: "Old shape task", status: "not-started" }],
     });
@@ -96,8 +120,8 @@ describe("todo index — bus consumer normalization", () => {
   it("ignores unrecoverable payloads without crashing (no phantom column)", () => {
     // State from the previous test persists (same registered instance).
     expect(() => {
-      getBus().emit(Events.TODOS_UPDATE, { source: "subagent:fake2", todos: "garbage" });
-      getBus().emit(Events.TODOS_UPDATE, {
+      bus.emit(Events.TODOS_UPDATE, { source: "subagent:fake2", todos: "garbage" });
+      bus.emit(Events.TODOS_UPDATE, {
         source: "subagent:fake2",
         todos: [{ status: "pending" }],
       });
@@ -110,7 +134,7 @@ describe("todo index — bus consumer normalization", () => {
   });
 
   it("TODOS_CLEAR removes the subagent column", () => {
-    getBus().emit(Events.TODOS_CLEAR, { source: "subagent:fake1" });
+    bus.emit(Events.TODOS_CLEAR, { source: "subagent:fake1" });
 
     const lines = renderLines();
     const joined = lines.join("\n");
@@ -138,7 +162,7 @@ describe("todo index — bus consumer normalization", () => {
 
     // Per-child source now carries a suffix; the header must still render
     // just the agent name, not the uuid.
-    getBus().emit(Events.TODOS_UPDATE, {
+    bus.emit(Events.TODOS_UPDATE, {
       source: "subagent:fake1:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
       todos: [{ id: 1, title: "Old shape task", status: "not-started" }],
     });
@@ -152,7 +176,7 @@ describe("todo index — bus consumer normalization", () => {
   });
 
   afterAll(() => {
-    // Unsubscribes the bus listeners registered by registerTodo and
+    // Unsubscribes the handle listeners registered by registerTodo and
     // clears state (fixture uses a pending item, so no auto-clear timer
     // is pending, but cancel defensively).
     handlers.session_shutdown?.(undefined, ctx as any);

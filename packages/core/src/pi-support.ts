@@ -22,8 +22,7 @@
 // Reload-stability: pi builds a fresh jiti/module registry on every extension
 // load, so a module-level `let warned = false` re-arms on `/reload` and the
 // aggregated notice would be printed again. Both pieces of state therefore live
-// on `globalThis` under `Symbol.for(...)`, the same device `bus.ts` and
-// `profiler.ts` use.
+// on `globalThis` under `Symbol.for(...)`, the same device `profiler.ts` uses.
 //
 // The `Symbol.for` keys and the plain-object entry shape are a contract, not an
 // implementation detail: `packages/diff` is a standalone package with no
@@ -56,7 +55,7 @@ const NOTICED_KEY = Symbol.for("archimedes:piSupportNoticed");
 
 type Registry = Record<string, PiSupportWarning>;
 
-// Type-safe globalThis access, as in `bus.ts`.
+// Type-safe globalThis access (the pattern `profiler.ts` also uses).
 function getGlobal<T>(key: symbol): T | undefined {
   return (globalThis as Record<symbol, unknown>)[key] as T | undefined;
 }

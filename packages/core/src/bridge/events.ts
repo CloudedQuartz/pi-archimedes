@@ -1,9 +1,9 @@
-// ── Bridge events (bus subscriptions — the state machine + subagent
-//    forwarding + push events) ─────────────────────────────────────────────
+// ── Bridge events (host-event-bus subscriptions — the state machine +
+//    subagent forwarding + push events) ────────────────────────────────────
 //
-// Subscribes the SIX real bus events (nothing emits agent_start/agent_settled/
-// session_start on the bus — those are pi extension events dispatched via
-// pi.on(...) and handled in registerBridge). Bus event names map to wire names
+// Subscribes the SIX channel-vocabulary events (nothing emits agent_start/
+// agent_settled/session_start on the bus — those are pi extension events dispatched via
+// pi.on(...) and handled in registerBridge). Channel names map to wire names
 // as explicit literals at each call site (no lookup table, no string surgery):
 //   COST_UPDATE → cost_update, TODOS_UPDATE → todos_update, TODOS_CLEAR →
 //   todos_clear. The ASK_* trio is not forwarded as pushes of their own —
@@ -16,20 +16,19 @@
 // with an ASK_RESPONSE (success, error, timeout, or ASK_CANCEL) so the
 // refcount never leaks.
 //
-// start() is one-way (no teardown counterpart to channel.configure({active:
-// false})). That's safe today because bridge activation is a process-constant
-// (isBridgeMode is evaluated once at session_start and never changes within a
-// process) — a future mixed-mode change (flipping active per session) would
-// need a stop() counterpart or it would leak the bus subscriptions.
+// The subscriptions live on the CALLER's host handle (`pi.events`), which this
+// module does not own — see `start()` / `stop()` for why the pair is mandatory
+// now that the transport is the host's.
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getBus, Events } from "../bus.js";
+import type { EventBus, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Events, emitOn } from "../events.js";
 import { diag } from "../log.js";
 import { sendEvent, request } from "./channel.js";
 
 let refcount = 0;
 let settled = false;
-let started = false; // the start() idempotency guard (sole writer is start())
+/** The handle the current subscription set was made on, or undefined when there is no subscription set. */
+let subscribedOn: EventBus | undefined;
 let sessionCtx: ExtensionContext | undefined;
 
 const pending = new Map<string, { source: string; toolCallId?: string; cancel: () => void }>();
@@ -80,15 +79,23 @@ function sessionRefs(): Record<string, unknown> {
 }
 
 /**
- * Subscribe the six real bus events. Idempotent (a re-start on /reload does
- * not double-subscribe — guarded by the `started` flag; the unsubscribers are
- * stored so a reset can tear them down).
+ * Subscribe the six channel-vocabulary events on a host handle.
+ *
+ * Idempotent by teardown, not by an early return: it stops any previous
+ * subscription set first, so it can be called once per `session_start` without
+ * double-delivering. A "we already started, bail out" flag would be wrong
+ * here — the host drops every subscription of a runtime when that runtime is
+ * invalidated (session replacement, `/reload`), so the second `session_start`
+ * of a process genuinely needs new subscriptions.
+ *
+ * @param events the caller's `pi.events` — the relay never reaches for a bus
+ *               of its own, which is the whole point of the migration
  */
-export function start(): void {
-  if (started) return;
-  started = true;
+export function start(events: EventBus): void {
+  stop();
+  subscribedOn = events;
 
-  unsubscribers.push(getBus().on(Events.ASK_REQUEST, (payload: unknown) => {
+  unsubscribers.push(events.on(Events.ASK_REQUEST, (payload: unknown) => {
     const p = payload as {
       source: string;
       requestId: string;
@@ -107,7 +114,7 @@ export function start(): void {
     }
   }));
 
-  unsubscribers.push(getBus().on(Events.ASK_RESPONSE, () => {
+  unsubscribers.push(events.on(Events.ASK_RESPONSE, () => {
     // Defensive floor: a spurious/duplicated ASK_RESPONSE must not drive the
     // refcount negative — a negative count would make every later ask
     // off-by-one (state reports working/idle while a prompt is pending, never
@@ -120,7 +127,7 @@ export function start(): void {
     pushState();
   }));
 
-  unsubscribers.push(getBus().on(Events.ASK_CANCEL, (payload: unknown) => {
+  unsubscribers.push(events.on(Events.ASK_CANCEL, (payload: unknown) => {
     const p = payload as { requestId: string };
     const entry = pending.get(p.requestId);
     // cancel() closes the socket → the request rejects → the .catch below
@@ -130,17 +137,41 @@ export function start(): void {
   }));
 
   // Bus payload types ARE the wire types — forward verbatim.
-  unsubscribers.push(getBus().on(Events.TODOS_UPDATE, (payload: unknown) => {
+  unsubscribers.push(events.on(Events.TODOS_UPDATE, (payload: unknown) => {
     sendEvent("todos_update", payload);
   }));
 
-  unsubscribers.push(getBus().on(Events.TODOS_CLEAR, (payload: unknown) => {
+  unsubscribers.push(events.on(Events.TODOS_CLEAR, (payload: unknown) => {
     sendEvent("todos_clear", payload);
   }));
 
-  unsubscribers.push(getBus().on(Events.COST_UPDATE, (payload: unknown) => {
+  unsubscribers.push(events.on(Events.COST_UPDATE, (payload: unknown) => {
     sendEvent("cost_update", payload);
   }));
+}
+
+/**
+ * Tear the subscription set down. The counterpart `start()` needs, and the
+ * reason the relay survives a replacement session: the host unsubscribes a
+ * runtime's handles when it invalidates it, so without an explicit teardown
+ * the module-level state (refcount, pending asks, "am I subscribed") would
+ * outlive the subscriptions it describes.
+ *
+ * Also releases the asks that died with the session — a Client request that
+ * can never be answered would otherwise pin the state machine at `blocked` for
+ * every session after this one.
+ *
+ * Safe to call when nothing is subscribed.
+ */
+export function stop(): void {
+  for (const unsubscribe of unsubscribers.splice(0)) unsubscribe();
+  subscribedOn = undefined;
+  // Cancel first, then drop: a cancelled Client request settles asynchronously
+  // and its paired ASK_RESPONSE finds no listener by then (the refcount is
+  // reset below, not decremented, so the pair cannot double-count).
+  for (const [, entry] of pending) entry.cancel();
+  pending.clear();
+  refcount = 0;
 }
 
 /**
@@ -149,6 +180,10 @@ export function start(): void {
  * emits the Client's response verbatim; on a failure (error / timeout /
  * cancel / child exit) it emits a cancelled ASK_RESPONSE so the refcount
  * always pairs.
+ *
+ * The answer rides back out on the handle this subscription set was started
+ * on — the same handle `subagent/spawn.ts` is listening on to write it down the
+ * child's socket.
  */
 function requestAskToClient(
   payload: {
@@ -167,7 +202,7 @@ function requestAskToClient(
 
   handle.promise
     .then((resp) => {
-      getBus().emit(Events.ASK_RESPONSE, {
+      emitOn(subscribedOn, Events.ASK_RESPONSE, {
         requestId: payload.requestId,
         cancelled: resp.cancelled,
         results: resp.results,
@@ -175,7 +210,7 @@ function requestAskToClient(
       pending.delete(payload.requestId);
     })
     .catch(() => {
-      getBus().emit(Events.ASK_RESPONSE, {
+      emitOn(subscribedOn, Events.ASK_RESPONSE, {
         requestId: payload.requestId,
         cancelled: true,
         results: payload.questions.map((q) => ({ id: q.id, selectedOptions: [] })),
@@ -186,13 +221,13 @@ function requestAskToClient(
   return { cancel: handle.cancel };
 }
 
-/** Test seam: reset the module singletons and tear down the bus subscriptions. */
+/** Test seam: reset the module singletons and tear down the subscriptions. */
 export function __resetForTests(): void {
   refcount = 0;
   settled = false;
-  started = false;
   sessionCtx = undefined;
   pending.clear();
   for (const u of unsubscribers) u();
   unsubscribers.length = 0;
+  subscribedOn = undefined;
 }

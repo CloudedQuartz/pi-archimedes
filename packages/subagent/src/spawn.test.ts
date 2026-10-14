@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import * as net from "node:net";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import { Events } from "@pi-archimedes/core/events";
 import type { AgentConfig } from "./agents.js";
 
 // The child's argv is a contract with the `pi` CLI, and CLI strings are invisible
@@ -14,15 +14,33 @@ vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 const { startAskSocketServer, spawnSubagent } = await import("./spawn.js");
 
 // startAskSocketServer is tested directly (not via spawnSubagent, which would
-// spawn a real `pi` process). The real bus is used — subscriptions are
-// unsubscribed in afterEach so they don't leak into other test files in the
-// same worker (the bus is a globalThis singleton).
+// spawn a real `pi` process). Each test gets its OWN bus stand-in — the host
+// handle is passed in rather than reached for, so there is no process-wide
+// singleton to leak between tests any more.
+
+/** Stands in for the host's `createEventBus()` (same emit/on/unsubscribe shape). */
+function fakeBus() {
+  const listeners = new Map<string, Array<(data: unknown) => void>>();
+  return {
+    emit(channel: string, data: unknown): void {
+      for (const handler of [...(listeners.get(channel) ?? [])]) handler(data);
+    },
+    on(channel: string, handler: (data: unknown) => void): () => void {
+      const subs = listeners.get(channel) ?? [];
+      subs.push(handler);
+      listeners.set(channel, subs);
+      return () => {
+        const current = listeners.get(channel) ?? [];
+        const idx = current.indexOf(handler);
+        if (idx !== -1) current.splice(idx, 1);
+      };
+    },
+  };
+}
 
 const cleanups: Array<() => void> = [];
-const unsubs: Array<() => void> = [];
 
 afterEach(() => {
-  unsubs.splice(0).forEach((u) => u());
   cleanups.splice(0).forEach((c) => c());
 });
 
@@ -43,7 +61,8 @@ function fakeSpawnResult(): ChildProcess {
 function argvFor(agent: Partial<AgentConfig> | undefined): string[] {
   spawnMock.mockReset();
   spawnMock.mockReturnValue(fakeSpawnResult());
-  const socket = startAskSocketServer(agent?.name ?? "general");
+  const events = fakeBus();
+  const socket = startAskSocketServer(agent?.name ?? "general", events);
   track(socket.cleanup);
   spawnSubagent({
     task: "do the thing",
@@ -51,6 +70,7 @@ function argvFor(agent: Partial<AgentConfig> | undefined): string[] {
     activeModel: undefined,
     cwd: "/tmp",
     signal: undefined,
+    events,
     agent: agent
       ? { name: agent.name ?? "general", description: "d", systemPrompt: "p", source: "user", filePath: "/tmp/a.md", ...agent }
       : undefined,
@@ -125,12 +145,13 @@ function writeAskRequest(client: net.Socket, requestId: string, toolCallId?: str
 
 describe("startAskSocketServer", () => {
   it("a child ask_request carrying toolCallId → the bus ASK_REQUEST carries the same toolCallId", async () => {
-    const { socketPath, cleanup } = startAskSocketServer("test-agent");
+    const events = fakeBus();
+    const { socketPath, cleanup } = startAskSocketServer("test-agent", events);
     track(cleanup);
     await new Promise((r) => setTimeout(r, 50)); // let the server listen
 
     const requests: unknown[] = [];
-    unsubs.push(getBus().on(Events.ASK_REQUEST, (p) => requests.push(p)));
+    events.on(Events.ASK_REQUEST, (p) => requests.push(p));
 
     const client = await connectClient(socketPath);
     writeAskRequest(client, "req-1", "tool-9");
@@ -142,9 +163,9 @@ describe("startAskSocketServer", () => {
     expect(req.toolCallId).toBe("tool-9");
     expect(req.questions).toEqual([{ id: "q1", question: "Which?", options: [{ label: "A" }] }]);
 
-    // Deliver the response (drains pending) before closing so no ASK_CANCEL
-    // leaks onto the global bus queue for the next test
-    getBus().emit(Events.ASK_RESPONSE, {
+    // Deliver the response (drains pending) before closing so no ASK_CANCEL is
+    // signalled for a request that was already answered.
+    events.emit(Events.ASK_RESPONSE, {
       requestId: "req-1",
       cancelled: false,
       results: [{ id: "q1", selectedOptions: ["A"] }],
@@ -154,15 +175,60 @@ describe("startAskSocketServer", () => {
     await new Promise((r) => setTimeout(r, 50)); // close handler ran (no-op)
   });
 
+  /**
+   * The ask round-trip, over the handle: the child's socket request goes out on
+   * the bus, the answer comes back on the SAME handle, and the server writes it
+   * back down the socket. Before this migration both halves went through the
+   * suite's `globalThis` bus; the transport changed, the socket contract did not.
+   */
+  it("round-trip: ask_request in → ASK_REQUEST out on the handle → ASK_RESPONSE in → ask_response back down the socket", async () => {
+    const events = fakeBus();
+    const { socketPath, cleanup } = startAskSocketServer("test-agent", events);
+    track(cleanup);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const frames: unknown[] = [];
+    const requests: unknown[] = [];
+    events.on(Events.ASK_REQUEST, (p) => requests.push(p));
+
+    const client = await connectClient(socketPath);
+    client.on("data", (chunk) => {
+      for (const line of chunk.toString("utf-8").split("\n")) {
+        if (line.trim()) frames.push(JSON.parse(line));
+      }
+    });
+
+    writeAskRequest(client, "req-rt", "tool-rt");
+    await vi.waitFor(() => expect(requests.length).toBe(1));
+
+    events.emit(Events.ASK_RESPONSE, {
+      requestId: "req-rt",
+      cancelled: false,
+      results: [{ id: "q1", selectedOptions: ["A"], customInput: undefined }],
+    });
+
+    await vi.waitFor(() => expect(frames.length).toBe(1));
+    expect(frames[0]).toEqual({
+      type: "ask_response",
+      requestId: "req-rt",
+      cancelled: false,
+      results: [{ id: "q1", selectedOptions: ["A"] }],
+    });
+
+    client.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
   it("closing the child socket → ASK_CANCEL for the pending requestId + source", async () => {
-    const { socketPath, cleanup } = startAskSocketServer("test-agent");
+    const events = fakeBus();
+    const { socketPath, cleanup } = startAskSocketServer("test-agent", events);
     track(cleanup);
     await new Promise((r) => setTimeout(r, 50)); // let the server listen
 
     const cancels: unknown[] = [];
-    unsubs.push(getBus().on(Events.ASK_CANCEL, (p) => cancels.push(p)));
+    events.on(Events.ASK_CANCEL, (p) => cancels.push(p));
     const requests: unknown[] = [];
-    unsubs.push(getBus().on(Events.ASK_REQUEST, (p) => requests.push(p)));
+    events.on(Events.ASK_REQUEST, (p) => requests.push(p));
 
     const client = await connectClient(socketPath);
     writeAskRequest(client, "req-2");
@@ -176,21 +242,22 @@ describe("startAskSocketServer", () => {
   });
 
   it("no ASK_CANCEL once the response has already been delivered (pending drained)", async () => {
-    const { socketPath, cleanup } = startAskSocketServer("test-agent");
+    const events = fakeBus();
+    const { socketPath, cleanup } = startAskSocketServer("test-agent", events);
     track(cleanup);
     await new Promise((r) => setTimeout(r, 50)); // let the server listen
 
     const cancels: unknown[] = [];
-    unsubs.push(getBus().on(Events.ASK_CANCEL, (p) => cancels.push(p)));
+    events.on(Events.ASK_CANCEL, (p) => cancels.push(p));
     const requests: unknown[] = [];
-    unsubs.push(getBus().on(Events.ASK_REQUEST, (p) => requests.push(p)));
+    events.on(Events.ASK_REQUEST, (p) => requests.push(p));
 
     const client = await connectClient(socketPath);
     writeAskRequest(client, "req-3");
     await vi.waitFor(() => expect(requests.length).toBe(1));
 
     // Deliver the response (drains pending) before the socket closes
-    getBus().emit(Events.ASK_RESPONSE, {
+    events.emit(Events.ASK_RESPONSE, {
       requestId: "req-3",
       cancelled: false,
       results: [{ id: "q1", selectedOptions: ["A"] }],
