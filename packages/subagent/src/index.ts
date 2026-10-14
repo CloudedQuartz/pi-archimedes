@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { SUBAGENT_PARAMS_SCHEMA } from "./tool-schema.js";
+import { SUBAGENT_PARAMS_SCHEMA, SUBAGENT_OUTPUT_SCHEMA, subagentStructuredContent } from "./tool-schema.js";
 import { executeSubagent, executeParallel } from "./execute.js";
 import { formatParallelResults, formatSingleResult } from "./format.js";
 // agent-manager.js lazy-loaded below to keep subagent tool registration fast
@@ -50,6 +50,7 @@ export function registerSubagent(pi: ExtensionAPI): void {
     description:
       "Delegate tasks to subagents. Provide either 'task' (single) or 'tasks' (parallel). Agent is optional — omit for a config-less run with the parent's model and all tools. Model override is rarely needed; the agent config or parent model is used by default.",
     parameters: SUBAGENT_PARAMS_SCHEMA,
+    outputSchema: SUBAGENT_OUTPUT_SCHEMA,
 
     async execute(
       _id: string,
@@ -152,6 +153,7 @@ export function registerSubagent(pi: ExtensionAPI): void {
         return {
           content: [{ type: "text", text: formatParallelResults(results) }],
           ...(nativeUsage ? { usage: nativeUsage } : {}),
+          structuredContent: subagentStructuredContent("parallel", results),
           details: {
             mode: "parallel",
             results,
@@ -237,6 +239,11 @@ export function registerSubagent(pi: ExtensionAPI): void {
           // session's totals, so publishing it here would count the money twice
           // (the same reason the `COST_UPDATE` route was deleted).
           ...(result.usageAccountedElsewhere ? {} : { usage: toNativeUsage(result.usage) }),
+          // Successes only. The predicate is the one two lines below, so a run
+          // that reports itself as failed carries no structured content and a
+          // codemode script keeps rejecting with the text it rejects with today
+          // (see `SUBAGENT_OUTPUT_SCHEMA`).
+          ...(result.error === undefined ? { structuredContent: subagentStructuredContent("single", [result]) } : {}),
           details: {
             mode: "single",
             results: [result],

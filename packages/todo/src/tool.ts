@@ -6,7 +6,7 @@ import { renderToolHeader, renderStatusLabel } from "@pi-archimedes/core/tool-re
 import { prepareTodoArguments } from "./prepare-args.js";
 import type { TodoStateManager } from "./state-manager.js";
 import { STATUS_ICONS } from "./types.js";
-import type { TodoDetails } from "./types.js";
+import type { TodoDetails, TodoItem, TodoStatus } from "./types.js";
 
 const TodoItemSchema = Type.Object({
   content: Type.String({
@@ -32,6 +32,55 @@ export const ManageTodoListParams = Type.Object({
 });
 
 export type ManageTodoListInput = Static<typeof ManageTodoListParams>;
+
+/**
+ * The machine-readable result, for programmatic callers.
+ *
+ * `structuredContent` mirrors `details` on success — the list as it now stands,
+ * which is the whole answer for both operations. pi hands it to a codemode
+ * script *instead of* the text, but only when the tool declares this schema, and
+ * it never checks one against the other (`pi: dist/extensions/codemode/execute.js`,
+ * `toScriptValue()`), so `tool.output-schema.test.ts` is the referee: it runs the
+ * handler and validates the payload against this schema.
+ *
+ * Failure results carry none of it. pi's own `bash` does attach structured
+ * content to a non-zero exit, because there the failing command *is* the
+ * observation; here every failure is a call that produced no observation (no
+ * list supplied, or a list the validator rejected), and pi's codemode script
+ * keeps rejecting with the text — same as before this schema existed.
+ */
+const TodoItemOutputSchema = Type.Object({
+  content: Type.String(),
+  status: StringEnum(["pending", "in_progress", "completed"] as const),
+  description: Type.Optional(Type.String()),
+});
+
+export const ManageTodoListOutput = Type.Object({
+  /** Which operation ran; the shape is the same for both. */
+  operation: StringEnum(["read", "write"] as const),
+  /** The list as it stands after the call. */
+  todos: Type.Array(TodoItemOutputSchema),
+});
+
+/**
+ * The JSON-shaped copy of a stored item. `TodoItem` is an interface, which
+ * TypeScript will not match against `JsonValue`'s index signature, and copying
+ * also pins the payload to exactly the three fields the schema declares.
+ */
+type TodoItemOutput = { content: string; status: TodoStatus; description?: string };
+
+function toOutputTodos(todos: TodoItem[]): TodoItemOutput[] {
+  return todos.map((item) => ({
+    content: item.content,
+    status: item.status,
+    ...(item.description !== undefined && { description: item.description }),
+  }));
+}
+
+/** `{ operation, todos }` — the successful result of either operation. */
+function todoOutput(operation: "read" | "write", todos: TodoItem[]): { operation: "read" | "write"; todos: TodoItemOutput[] } {
+  return { operation, todos: toOutputTodos(todos) };
+}
 
 export const TOOL_DESCRIPTION = `Manage a structured todo list to track progress and plan tasks throughout your coding session. Use this tool VERY frequently to ensure task visibility and proper planning.
 
@@ -84,6 +133,7 @@ export function createManageTodoListTool(state: TodoStateManager, onUpdate: () =
     label: "Todo List",
     description: TOOL_DESCRIPTION,
     parameters: ManageTodoListParams,
+    outputSchema: ManageTodoListOutput,
 
     // Repair common model mistakes (stringified arrays, missing
     // title/status, bare-string items) BEFORE schema validation. See
@@ -109,6 +159,7 @@ export function createManageTodoListTool(state: TodoStateManager, onUpdate: () =
             },
           ],
           details: { operation: "read", todos } as TodoDetails,
+          structuredContent: todoOutput("read", todos),
         };
       }
 
@@ -152,6 +203,7 @@ export function createManageTodoListTool(state: TodoStateManager, onUpdate: () =
       return {
         content: [{ type: "text" as const, text: message }],
         details: { operation: "write", todos } as TodoDetails,
+        structuredContent: todoOutput("write", todos),
       };
     },
 

@@ -97,6 +97,20 @@ export interface SubagentToolResult {
   content: Array<{ type: "text"; text: string }>;
   details: SubagentDetails;
   /**
+   * The machine-readable result for programmatic callers, matching
+   * `SUBAGENT_OUTPUT_SCHEMA`. Success results only: a failed run reports
+   * `isError` and carries none, so a codemode script keeps rejecting with the
+   * text it rejects with today.
+   *
+   * A type alias, not an interface: `AgentToolResult.structuredContent` is
+   * `JsonValue`, and TypeScript will not match an interface against its index
+   * signature.
+   */
+  structuredContent?: {
+    mode: "single" | "parallel";
+    results: SubagentRunReport[];
+  };
+  /**
    * The runs' summed usage, in pi's own shape (see `usage.ts`).
    *
    * This is the cost report: pi persists it onto the toolResult message and
@@ -107,6 +121,23 @@ export interface SubagentToolResult {
   usage?: Usage;
   isError?: boolean;
 }
+
+/**
+ * The machine-readable report for one run — `SubagentResult` without the live
+ * progress blob (see `subagentStructuredContent()` in `tool-schema.ts`).
+ */
+export type SubagentRunReport = {
+  agent: string;
+  task: string;
+  exitCode: number;
+  childSessionId?: string;
+  outcome?: RunOutcome;
+  usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number };
+  model?: string;
+  finalOutput?: string;
+  error?: string;
+  progressSummary?: { toolCount: number; tokens: number; durationMs: number };
+};
 
 export interface SubagentDetails {
   mode: "single" | "parallel";
