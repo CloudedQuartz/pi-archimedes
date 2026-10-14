@@ -46,6 +46,13 @@ export function row(text: string): RowSegment {
   return { kind: "row", text };
 }
 
+/**
+ * What the row builders draw into: the two ways content reaches a `RowBlock`.
+ * Kept as a projection of `RowBlock` so a builder cannot ask for anything a row
+ * does not do (no `tui`, no width, no renderer — see ADR 0027).
+ */
+export type RowSink = Pick<RowBlock, "setText" | "setSegments">;
+
 /** Multi-line content that keeps pi-tui's wrapping. */
 export function block(text: string): RowSegment {
   return { kind: "block", text };

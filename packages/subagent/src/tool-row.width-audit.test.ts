@@ -25,6 +25,7 @@
  * audit walks the real render path rather than a helper it hopes is on it):
  *
  *   renderCall                                   — the call row
+ *   handleToolStart → currentToolArgs            — the args a row is drawn from
  *   renderResult → renderSubagentResult
  *     ├─ results[0]                  → compact single      (3 rows)
  *     ├─ progress[0]                 → compact progress    (3 rows, streaming)
@@ -38,6 +39,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as fc from "fast-check";
 import { Box, Container, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { handleToolStart } from "./handlers.js";
+import type { StreamState } from "./types.js";
 
 const discoverAgents = vi.hoisted(() => vi.fn());
 const executeSubagent = vi.hoisted(() => vi.fn());
@@ -398,6 +401,140 @@ describe("subagent tool rows: width audit", () => {
           `${c.path} row ${c.row} @${width} draws ${drawn} of ${width}: ${JSON.stringify(content(lines[c.row] ?? ""))}`,
         ).toBeGreaterThanOrEqual(width - 1);
       }
+    }
+  });
+
+  // A task is free text and an error is usually stderr, so both arrive carrying
+  // newlines. The collapsed view is a fixed three rows per agent; if a newline
+  // inside one field became a row of its own, a failed child's stack trace would
+  // push the collapsed block open — the old `truncLine` treated a newline as a
+  // hard boundary for exactly this reason. `RowBlock.setText` splits every
+  // newline, so the compact builders have to hand over one `row` segment per
+  // field they mean to be one row.
+  it("keeps a multiline task or error to three rows per agent (collapsed)", () => {
+    const multilineTask = "Review the change\nRun the full suite\nReport every finding " + "x".repeat(200);
+    const multilineError = "spawn failed\ncommand not found: pnpm\nsee the log " + "y".repeat(200);
+    const hidden = ["Run the full suite", "command not found: pnpm"];
+
+    const taskProgress = makeProgress({ task: multilineTask });
+    const cases: Array<{ label: string; details: unknown; rows: number }> = [
+      {
+        label: "compact:single/task",
+        details: { mode: "single", results: [makeResult({ task: multilineTask })], progress: undefined },
+        rows: 3,
+      },
+      {
+        label: "compact:single/error",
+        details: {
+          mode: "single",
+          results: [makeResult({ task: multilineTask, outcome: undefined, exitCode: 1, error: multilineError })],
+          progress: undefined,
+        },
+        rows: 3,
+      },
+      { label: "compact:progress", details: { mode: "single", results: [], progress: [taskProgress] }, rows: 3 },
+      {
+        label: "compact:parallel",
+        details: {
+          mode: "parallel",
+          results: [
+            makeResult({ task: multilineTask }),
+            makeResult({ agent: "reviewer", task: multilineTask, outcome: undefined, exitCode: 1, error: multilineError }),
+          ],
+          progress: undefined,
+        },
+        rows: 6,
+      },
+      {
+        label: "compact:parallel-progress",
+        details: {
+          mode: "parallel",
+          results: [],
+          progress: [taskProgress, makeProgress({ agent: "reviewer", task: multilineTask })],
+        },
+        rows: 6,
+      },
+    ];
+
+    const failures: string[] = [];
+    for (const width of WIDTHS) {
+      for (const c of cases) {
+        const lines = registerTool()
+          .renderResult(
+            { content: [], details: c.details, isError: false },
+            { expanded: false },
+            theme,
+            { state: {}, invalidate: () => {} },
+          )
+          .render(width);
+        const drawn = lines.map(content);
+        if (lines.length !== c.rows) {
+          failures.push(`${c.label}@${width}: ${lines.length} rows, expected ${c.rows}:\n  ${JSON.stringify(drawn)}`);
+        }
+        for (const text of hidden) {
+          if (drawn.some((d) => d.includes(text))) {
+            failures.push(`${c.label}@${width}: ${JSON.stringify(text)} leaked into a row of its own:\n  ${JSON.stringify(drawn)}`);
+          }
+        }
+        lines.forEach((line, index) => {
+          if (visibleWidth(stripTerminalSequences(line)) > width) {
+            failures.push(`${c.label}@${width}: row ${index} over the frame`);
+          }
+        });
+        // The row was cut at the newline, and says so.
+        if (!(drawn[0] ?? "").endsWith("...")) {
+          failures.push(`${c.label}@${width}: label row lost its cut marker: ${JSON.stringify(drawn[0])}`);
+        }
+      }
+    }
+    expect(failures, failures.join("\n  ")).toEqual([]);
+  });
+
+  // The row layer can only draw what it is handed. `currentToolArgs` is produced
+  // by the streaming handler, and a preview cap there is a second, invisible
+  // character cap: pi's own bash row passes the command through whole and cuts
+  // it at the render width (`formatShellCall`), so anything shorter than the
+  // frame has to come from the frame.
+  it("fills the frame with args that arrive through handleToolStart", () => {
+    const longCommand = `pnpm exec vitest run packages/subagent ${"--reporter=verbose ".repeat(15)}`;
+    const state: StreamState = {
+      toolCount: 0,
+      turnCount: 0,
+      totalInput: 0,
+      totalOutput: 0,
+      totalCacheRead: 0,
+      totalCacheWrite: 0,
+      totalCost: 0,
+      currentTool: undefined,
+      currentToolArgs: undefined,
+      currentToolStartedAt: undefined,
+      model: undefined,
+      accumulatedOutput: [],
+      recentOutput: [],
+      toolCalls: [],
+      finalOutput: undefined,
+    };
+    handleToolStart(state, { type: "tool_execution_start", toolName: "bash", args: { command: longCommand } });
+    expect(state.currentToolArgs?.length, "handler threw away args the frame could draw")
+      .toBeGreaterThanOrEqual(longCommand.length);
+
+    const details = {
+      mode: "single",
+      results: [],
+      progress: [makeProgress({ currentToolArgs: state.currentToolArgs, currentToolStartedAt: undefined })],
+    };
+    for (const width of WIDTHS) {
+      const lines = registerTool()
+        .renderResult({ content: [], details, isError: false }, { expanded: false }, theme, {
+          state: {},
+          invalidate: () => {},
+        })
+        .render(width);
+      const drawn = visibleWidth(content(lines[2] ?? ""));
+      expect(
+        drawn,
+        `args row @${width} draws ${drawn} of ${width}: ${JSON.stringify(content(lines[2] ?? ""))}`,
+      ).toBeGreaterThanOrEqual(width - 1);
     }
   });
 

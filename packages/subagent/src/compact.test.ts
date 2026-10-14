@@ -1,29 +1,43 @@
 import { describe, it, expect, vi } from "vitest";
 import * as fc from "fast-check";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { buildActivityLine, renderCompactSingle, renderCompactParallel } from "./compact.js";
+import { RowBlock, type RowSegment, type RowSink } from "./row-block.js";
 import type { SubagentResult, SubagentProgress, SubagentDetails, SubagentToolCall } from "./types.js";
 
-// ── Mocks ───────────────────────────────────────────────────────────────────
+// ── The row sink the builders draw into ───────────────────────────────────────────────────────────────────
 
-vi.mock("@earendil-works/pi-tui", () => {
-  class MockTextInner {
-    private _content = "";
+/**
+ * A recording `RowSink`, standing in for the `RowBlock` `render.ts` hands these
+ * builders. Deliberately not a `RowBlock`, and deliberately no mock of pi-tui's
+ * `Text`: `row-block.ts` takes `sliceByColumn` / `wrapTextWithAnsi` /
+ * `visibleWidth` from that module, so mocking it to fake a sink would quietly
+ * break the row code the tests are about. What the segments draw is asserted
+ * with a real `RowBlock` below.
+ */
+class RecordingSink implements RowSink {
+  private content = "";
+  private segments: RowSegment[] | undefined = undefined;
 
-    setText(content: string): void {
-      this._content = content;
-    }
-
-    getContent(): string {
-      return this._content;
-    }
+  setText(content: string): void {
+    this.content = content;
+    this.segments = undefined;
   }
-  return {
-    Text: MockTextInner,
-  };
-});
 
-// Re-import MockText for use in tests (same class as the mock)
-import { Text as MockText } from "@earendil-works/pi-tui";
+  /** Mirrors `RowBlock.setSegments`: the joined text is what a row draws. */
+  setSegments(segments: RowSegment[]): void {
+    this.segments = segments;
+    this.content = segments.map((s) => s.text).join("\n");
+  }
+
+  getContent(): string {
+    return this.content;
+  }
+
+  getSegments(): RowSegment[] | undefined {
+    return this.segments;
+  }
+}
 
 // Type-safe helper: ActivityData with all optional fields for test convenience
 // ActivityData is defined in compact.ts — reconstruct the shape here
@@ -236,23 +250,23 @@ describe("renderCompactSingle", () => {
     };
   }
 
-  it("calls setText with expected output structure for completed agent", () => {
+  it("hands the block to the row sink with the expected structure for a completed agent", () => {
     const { theme } = makeMockTheme();
-    const text = new MockText();
+    const text = new RecordingSink();
     const result = makeResult({ exitCode: 0 });
     const context = { state: {}, invalidate: vi.fn() };
 
     renderCompactSingle(text, result, undefined, theme, context);
 
-    const output = (text as unknown as { getContent(): string }).getContent();
+    const output = text.getContent();
     expect(output).toContain("test-agent");
     expect(output).toContain("do something");
     expect(output).toContain("✓ Done");
   });
 
-  it("calls setText with expected output structure for running agent", () => {
+  it("hands the block to the row sink with the expected structure for a running agent", () => {
     const { theme } = makeMockTheme();
-    const text = new MockText();
+    const text = new RecordingSink();
     const result = makeResult({ exitCode: 1 });
     const progress: SubagentProgress = {
       agent: "test-agent",
@@ -277,19 +291,56 @@ describe("renderCompactSingle", () => {
 
     renderCompactSingle(text, result, progress, theme, context);
 
-    const output = (text as unknown as { getContent(): string }).getContent();
+    const output = text.getContent();
     expect(output).toContain("test-agent");
     expect(output).toContain("read");
   });
 
   it("returns the text instance", () => {
     const { theme } = makeMockTheme();
-    const text = new MockText();
+    const text = new RecordingSink();
     const result = makeResult();
     const context = { state: {}, invalidate: vi.fn() };
 
     const returned = renderCompactSingle(text, result, undefined, theme, context);
     expect(returned).toBe(text);
+  });
+
+  // A task is free text and an error is usually stderr, so both arrive with
+  // newlines in them. The collapsed view is three rows per agent, so each field
+  // has to reach the row layer as its own `row` segment carrying the whole text:
+  // the row then cuts itself at the first newline, at the width it is drawn at.
+  // Handed over as one joined string, every newline would become a row and a
+  // failed child's stderr would open the collapsed block.
+  it("hands over three row segments carrying whole fields, so newlines reach the row cut", () => {
+    const { theme } = makeMockTheme();
+    const text = new RecordingSink();
+    const result = makeResult({
+      task: "Review the change\nRun the full suite",
+      exitCode: 1,
+      error: "spawn failed\ncommand not found: pnpm",
+    });
+
+    renderCompactSingle(text, result, undefined, theme, { state: {}, invalidate: vi.fn() });
+
+    const segments = text.getSegments();
+    expect(segments?.map((s) => s.kind)).toEqual(["row", "row", "row"]);
+    // Fields arrive uncapped — the row decides how much of each one fits.
+    expect(segments?.[0]?.text).toContain("Run the full suite");
+    expect(segments?.[2]?.text).toContain("command not found: pnpm");
+
+    // And drawn by the real row component, that is three rows: the newline is a
+    // boundary inside the row, not a new row.
+    const rows = new RowBlock();
+    rows.setSegments(segments!);
+    const drawn = rows.render(80).map((l) => stripTerminalSequences(l).replace(/\s+$/, ""));
+    // Three rows, and the two fields that carry newlines end in the cut marker
+    // rather than spilling into rows of their own. (The mock theme marks its
+    // spans with markers of its own, so match the tail of each row.)
+    expect(drawn).toHaveLength(3);
+    expect(drawn[0]).toMatch(/: Review the change\.\.\.$/);
+    expect(drawn[1]).toContain("gpt-4");
+    expect(drawn[2]).toMatch(/✗ spawn failed\.\.\.$/);
   });
 });
 
@@ -330,13 +381,13 @@ describe("renderCompactParallel", () => {
 
   it("renders a full 3-line block per agent (parity with single view)", () => {
     const { theme } = makeMockTheme();
-    const text = new MockText();
+    const text = new RecordingSink();
     const details = makeDetails();
     const context = { state: {}, invalidate: vi.fn() };
 
     renderCompactParallel(text, details, theme, context);
 
-    const output = (text as unknown as { getContent(): string }).getContent();
+    const output = text.getContent();
     expect(output).toContain("agent-a");
     expect(output).toContain("agent-b");
     // Each agent is a 3-line block (label / model+stats / activity); with two
@@ -355,7 +406,7 @@ describe("renderCompactParallel", () => {
 
   it("returns the text instance", () => {
     const { theme } = makeMockTheme();
-    const text = new MockText();
+    const text = new RecordingSink();
     const details = makeDetails();
     const context = { state: {}, invalidate: vi.fn() };
 
