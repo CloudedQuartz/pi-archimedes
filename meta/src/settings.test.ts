@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
+import type { SettingItem } from "@earendil-works/pi-tui";
 
 // ── Panel wiring guard ──────────────────────────────────────────────────────
 //
@@ -38,11 +39,13 @@ import { buildSettingsItems, openSettings, PROMPTS } from "./settings.js";
 import { loadAllConfig } from "./config.js";
 
 // Capture what openSettings hands the manager so the onChange switch can be
-// driven directly, and what lands in settings.json after onSave.
+// driven directly, and what lands in settings.json after onSave. `items` is the
+// real `SettingItem[]`, so a test can look at a row's label and its values and
+// not only its id — that is how the panel actually receives them.
 const managerCalls: Array<{
   onChange: (id: string, value: string) => void;
   onSave: () => void;
-  items: Array<{ id: string; currentValue: string }>;
+  items: SettingItem[];
 }> = [];
 
 vi.mock("./settings-manager.js", async (importOriginal) => ({
@@ -155,5 +158,62 @@ describe("sessionNameModel editing", () => {
     panel.onChange("sessionNameModel", "  anthropic/claude  ");
     panel.onSave();
     expect(savedModel()).toBe("anthropic/claude");
+  });
+});
+
+// ── The splash row, through the panel ────────────────────────────────
+//
+// The splash toggle is the one setting whose whole point is what the NEXT
+// session draws, so it is worth pinning that the row in `/archimedes` writes the
+// key the ui package reads (`archimedes.ui.startupSplash`) rather than a
+// same-named field that nothing loads.
+
+describe("startupSplash editing", () => {
+  async function openPanel() {
+    managerCalls.length = 0;
+    const custom = vi.fn((factory: any) => factory({}, {}, {}, () => {}));
+    await openSettings({} as any, { ui: { custom } } as any);
+    const panel = managerCalls.at(-1);
+    if (!panel) throw new Error("openSettings never built a settings manager");
+    return panel;
+  }
+
+  function savedSplash() {
+    return (store["archimedes.ui"] as any)?.startupSplash;
+  }
+
+  it("shows the row off by default, with the pi's-startup wording", async () => {
+    const panel = await openPanel();
+    const item = panel.items.find((i) => i.id === "startupSplash");
+    expect(item?.label).toBe("Startup Splash");
+    expect(item?.currentValue).toBe("Off");
+    expect(item?.values).toEqual(["On", "Off"]);
+  });
+
+  it("writes startupSplash when the row is switched on and saved", async () => {
+    const panel = await openPanel();
+    panel.onChange("startupSplash", "On");
+    panel.onSave();
+    expect(savedSplash()).toBe(true);
+  });
+
+  it("writes it back off when the row is switched off", async () => {
+    store["archimedes.ui"] = { startupSplash: true };
+    const panel = await openPanel();
+    const item = panel.items.find((i) => i.id === "startupSplash");
+    expect(item?.currentValue).toBe("On");
+    panel.onChange("startupSplash", "Off");
+    panel.onSave();
+    expect(savedSplash()).toBe(false);
+  });
+
+  it("leaves the suite's other ui keys alone while saving it", async () => {
+    store["archimedes.ui"] = { startupSplash: false, editorSpinBorder: false };
+    const panel = await openPanel();
+    panel.onChange("startupSplash", "On");
+    panel.onSave();
+    expect(store["archimedes.ui"]).toEqual(
+      expect.objectContaining({ startupSplash: true, editorSpinBorder: false }),
+    );
   });
 });

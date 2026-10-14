@@ -70,16 +70,29 @@ export function getUISettingsItems(config: UIConfig): SettingItem[] {
       currentValue: config.labelColor,
     },
     {
+      id: "startupSplash",
+      label: "Startup Splash",
+      description:
+        "Archimedes startup splash animation (Off = pi's own startup screen, which is the default)",
+      // Strictly `=== true`, because that is how the gate reads it (`index.ts`):
+      // a hand-edited `"true"` or `1` is off on screen, so it must read as off
+      // here too. Every other boolean row can afford truthiness because every
+      // other boolean is *consumed* by truthiness.
+      currentValue: config.startupSplash === true ? "On" : "Off",
+      values: ["On", "Off"],
+    },
+    {
       id: "animationStyle",
       label: "Logo Animation",
-      description: "Splashscreen logo reveal style",
+      description: "Splashscreen logo reveal style (applies when Startup Splash is On)",
       currentValue: config.animationStyle,
       values: [...ANIMATION_STYLES],
     },
     {
       id: "colorfulLogo",
       label: "Colorful Logo",
-      description: "Use pi's brand colors for the splash logo",
+      description:
+        "Use pi's brand colors for the splash logo (applies when Startup Splash is On)",
       currentValue: config.colorfulLogo ? "On" : "Off",
       values: ["On", "Off"],
     },

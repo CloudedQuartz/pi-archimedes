@@ -121,6 +121,10 @@ export async function openSettings(pi: ExtensionAPI, ctx: ExtensionContext): Pro
           case "labelColor": uiConfig.labelColor = newValue; break;
           case "animationStyle": uiConfig.animationStyle = newValue as UIConfig["animationStyle"]; break;
           case "colorfulLogo": uiConfig.colorfulLogo = newValue === "On"; break;
+          // Strictly `On`/`Off` like every other boolean row: the panel only ever
+          // hands back one of the item's `values`, and the gate in `ui` reads the
+          // flag strictly, so a stray string can never switch the splash on.
+          case "startupSplash": uiConfig.startupSplash = newValue === "On"; break;
 
           // ── Footer settings ──
           case "splitThreshold": {

@@ -173,6 +173,18 @@ Only want the diffs or footer? Each component is available separately — see [C
 
 Every component keeps its own namespace under `~/.pi/agent/settings.json`, which Pi parses as **strict JSON**. Each component's README documents its namespace, fields, and defaults — including [core](packages/core/README.md) (event channels, bridge, chrome, utilities), [ui](packages/ui/README.md) (bash tool styling, framed editor, spinner, thinking, splash), [footer](packages/footer/README.md), [diff](packages/diff/README.md), [notify](packages/notify/README.md), [image-paste](packages/image-paste/README.md), and [sudo](packages/sudo/README.md) (also strict JSON). The `/archimedes` panel covers the settings that have a control; not everything does.
 
+### The startup splash is opt-in
+
+Pi owns the startup screen. The suite's splash — the animated logo, the `[Version]` row and the session's model scope — is **off by default**, so a fresh install sees pi's own startup header and its own loaded-resource listing. Turn it on and the splash takes pi's header slot from the next session:
+
+```json
+{
+  "archimedes.ui": { "startupSplash": true }
+}
+```
+
+The same row is in `/archimedes` as **Startup Splash**. While it is off, pi's own `quietStartup` decides what you see, exactly as it does with no Archimedes loaded, and the editor spin border, thinking collapse, tool styling and the footer carry on unaffected.
+
 ### Diagnostics
 
 The suite never prints to your terminal: a stray write would corrupt the display, and inside a subagent it would be thrown away anyway. Developer diagnostics go to a log file instead, and you opt in by naming it:
@@ -190,7 +202,7 @@ Each line is `[timestamp] [component] message`, appended, and the file's absence
 | Component | npm package | What it adds |
 |-----------|-------------|--------------|
 | **Core** | [`@pi-archimedes/core`](packages/core/README.md) | Foundational non-UI runtime: event channel vocabulary (over pi's own `pi.events`), bridge channel, pure text/color/tool-render utilities, overlay chrome, profiler |
-| **UI** | [`@pi-archimedes/ui`](packages/ui/README.md) | Splash/editor/spinner/thinking components, bash + codemode tool styling |
+| **UI** | [`@pi-archimedes/ui`](packages/ui/README.md) | Opt-in startup splash (off by default — pi's own startup is the default), editor/spinner/thinking components, bash + codemode tool styling |
 | **Subagent** | [`@pi-archimedes/subagent`](packages/subagent/README.md) | Live subagent dispatch, custom agent definitions; `/agents` editor with the suite |
 | **Todo** | [`@pi-archimedes/todo`](packages/todo/README.md) | Multi-column todo board with subagent columns and auto-clear |
 | **Ask** | [`@pi-archimedes/ask`](packages/ask/README.md) | Structured questions — including subagent questions relayed into your terminal |

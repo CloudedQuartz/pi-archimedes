@@ -228,6 +228,7 @@ describe("item set", () => {
       "codeUnindent",
       "labelText",
       "labelColor",
+      "startupSplash",
       "animationStyle",
       "colorfulLogo",
       "editorSpinBorder",

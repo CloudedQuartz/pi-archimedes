@@ -45,6 +45,7 @@ describe("loadUIConfig", () => {
       codeUnindent: true,
       labelText: "Thinking...",
       labelColor: "255,215,0",
+      startupSplash: false,
       animationStyle: "vertical-up",
       colorfulLogo: false,
       editorSpinBorder: true,
@@ -77,6 +78,18 @@ describe("saveUIConfig", () => {
     saveUIConfig(config);
     expect(saveConfig).toHaveBeenCalledWith("archimedes.ui", config);
   });
+
+  // The splash toggle is saved by the same whole-object write as every other UI
+  // key, so `/archimedes` turning it on reaches settings.json as
+  // `archimedes.ui.startupSplash` — nothing strips an unknown key on the way.
+  it("persists startupSplash under archimedes.ui", () => {
+    const config = { ...DEFAULT_UI_CONFIG, startupSplash: true };
+    saveUIConfig(config);
+    expect(saveConfig).toHaveBeenCalledWith(
+      "archimedes.ui",
+      expect.objectContaining({ startupSplash: true }),
+    );
+  });
 });
 
 describe("DEFAULT_UI_CONFIG", () => {
@@ -91,6 +104,7 @@ describe("DEFAULT_UI_CONFIG", () => {
       codeUnindent: true,
       labelText: "Thinking...",
       labelColor: "255,215,0",
+      startupSplash: false,
       animationStyle: "vertical-up",
       colorfulLogo: false,
       editorSpinBorder: true,
@@ -98,6 +112,12 @@ describe("DEFAULT_UI_CONFIG", () => {
       editorSpinLabel: "Working",
       editorSpinStyle: "pendulum",
     });
+  });
+
+  // The maintainer's call on the startup splash: keep the code, flip the
+  // default. pi's own startup is what a fresh install sees.
+  it("leaves the startup splash off, so pi's own startup is the default", () => {
+    expect(DEFAULT_UI_CONFIG.startupSplash).toBe(false);
   });
 
   it("exposes a speed→multiplier map (slow/normal/fast = 1.5/1/0.6)", () => {

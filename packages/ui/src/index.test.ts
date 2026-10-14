@@ -187,7 +187,11 @@ function setupHarness(
 describe("packages/ui lifecycle and registration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(loadUIConfig).mockReturnValue({ ...DEFAULT_UI_CONFIG });
+    // The splash is opt-in (`startupSplash` defaults to off), and this file is
+    // where the splash's installation and teardown are asserted — so the
+    // harness asks for it. The default-off path, and the whole
+    // `startupSplash` × `quietStartup` table, is `startup-splash-gate.test.ts`.
+    vi.mocked(loadUIConfig).mockReturnValue({ ...DEFAULT_UI_CONFIG, startupSplash: true });
   });
 
   afterEach(() => {
@@ -628,6 +632,36 @@ describe("packages/ui lifecycle and registration", () => {
       expect(ui.setHeader).not.toHaveBeenCalled();
       expect(ui.setEditorComponent).not.toHaveBeenCalled();
       expect(patchThinkingRenderer).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("startup header: the splash is opt-in (default off)", () => {
+    // `startup-splash-gate.test.ts` drives the real animation module; this uses
+    // the stubbed one so the claim "nothing of the splash runs" is the absence
+    // of calls into it, which is the direct form of "no logo work":
+    // `renderHeader` is what asks `logo.ts` for a frame, and the two listing
+    // calls are what arm the animation.
+    it("hands the header to pi and touches no part of the splash module", () => {
+      // The default config, unmodified: this is what a settings file with no
+      // `startupSplash` key resolves to.
+      vi.mocked(loadUIConfig).mockReturnValue({ ...DEFAULT_UI_CONFIG });
+      const { triggerStart, triggerShutdown } = setupHarness({});
+      const { ctx, ui } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      expect(ui.setHeader).toHaveBeenCalledTimes(1);
+      expect(ui.setHeader).toHaveBeenCalledWith(undefined);
+      expect(renderHeader).not.toHaveBeenCalled();
+      expect(patchStartupListing).not.toHaveBeenCalled();
+      expect(revealStartupListing).not.toHaveBeenCalled();
+
+      // Teardown still runs its one unconditional stop — cheap and idempotent —
+      // while the ref freeze is guarded on there being a ref, so an off session
+      // cannot resurrect an animation that was never built.
+      triggerShutdown(ctx);
+      expect(stopStartupListing).toHaveBeenCalledTimes(1);
+      expect(renderHeader).not.toHaveBeenCalled();
     });
   });
 

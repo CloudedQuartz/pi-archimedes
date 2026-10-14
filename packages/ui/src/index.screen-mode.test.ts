@@ -195,7 +195,10 @@ describe("startup splash on either screen", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(loadUIConfig).mockReturnValue({ ...DEFAULT_UI_CONFIG });
+    // These tests are the splash's own screen-mode coverage, so they ask for the
+    // splash: `startupSplash` is opt-in and defaults to off, which would leave
+    // every one of them holding `undefined` instead of a header factory.
+    vi.mocked(loadUIConfig).mockReturnValue({ ...DEFAULT_UI_CONFIG, startupSplash: true });
     warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     error = vi.spyOn(console, "error").mockImplementation(() => {});
   });
@@ -310,7 +313,9 @@ describe("startup splash on either screen", () => {
 // out everything the layout still has to fit.
 describe("header output per screen mode", () => {
   beforeEach(() => {
-    vi.mocked(loadUIConfig).mockReturnValue({ ...DEFAULT_UI_CONFIG });
+    // Same reason as above: this describe renders the finished splash, which
+    // only exists when the opt-in flag is on.
+    vi.mocked(loadUIConfig).mockReturnValue({ ...DEFAULT_UI_CONFIG, startupSplash: true });
   });
 
   afterEach(() => {

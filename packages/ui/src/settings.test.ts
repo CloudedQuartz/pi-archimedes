@@ -3,9 +3,9 @@ import { getUISettingsItems } from "./settings.js";
 import { DEFAULT_UI_CONFIG, ANIMATION_STYLES, type UIConfig } from "./config.js";
 
 describe("getUISettingsItems", () => {
-  it("exposes all 15 UI setting items with correct defaults", () => {
+  it("exposes all 16 UI setting items with correct defaults", () => {
     const items = getUISettingsItems(DEFAULT_UI_CONFIG);
-    expect(items).toHaveLength(15);
+    expect(items).toHaveLength(16);
 
     const ids = items.map((i) => i.id);
     expect(ids).toEqual([
@@ -18,6 +18,7 @@ describe("getUISettingsItems", () => {
       "codeUnindent",
       "labelText",
       "labelColor",
+      "startupSplash",
       "animationStyle",
       "colorfulLogo",
       "editorSpinBorder",
@@ -35,6 +36,7 @@ describe("getUISettingsItems", () => {
     expect(items.find((i) => i.id === "codeUnindent")?.currentValue).toBe("On");
     expect(items.find((i) => i.id === "labelText")?.currentValue).toBe("Thinking...");
     expect(items.find((i) => i.id === "labelColor")?.currentValue).toBe("255,215,0");
+    expect(items.find((i) => i.id === "startupSplash")?.currentValue).toBe("Off");
     expect(items.find((i) => i.id === "animationStyle")?.currentValue).toBe("vertical-up");
     expect(items.find((i) => i.id === "editorSpinBorder")?.currentValue).toBe("On");
     expect(items.find((i) => i.id === "editorSpinSpeed")?.currentValue).toBe("Normal");
@@ -87,6 +89,22 @@ describe("getUISettingsItems", () => {
     expect(item?.values).toEqual([...ANIMATION_STYLES]);
   });
 
+  // The splash is opt-in, so the row has to read as an opt-in to a human: a
+  // label that names the splash, and an `Off` default matching the config.
+  it("offers the startup splash as a human-readable On/Off row, off by default", () => {
+    const off = getUISettingsItems(DEFAULT_UI_CONFIG).find((i) => i.id === "startupSplash");
+    expect(off).toBeDefined();
+    expect(off!.label).toBe("Startup Splash");
+    expect(off!.description).toMatch(/splash/i);
+    expect(off!.values).toEqual(["On", "Off"]);
+    expect(off!.currentValue).toBe("Off");
+
+    const on = getUISettingsItems({ ...DEFAULT_UI_CONFIG, startupSplash: true }).find(
+      (i) => i.id === "startupSplash",
+    );
+    expect(on!.currentValue).toBe("On");
+  });
+
   describe("robustness with hand-edited (corrupt) values", () => {
     it("an empty-string editorSpinSpeed projects to 'Normal'", () => {
       const items = getUISettingsItems({
@@ -118,6 +136,23 @@ describe("getUISettingsItems", () => {
         editorSpinStyle: null as never,
       });
       expect(items.find((i) => i.id === "editorSpinStyle")?.currentValue).toBe("Typing");
+    });
+
+    // `startupSplash` is read strictly by the gate (`config.startupSplash === true`,
+    // `index.ts`), so a hand-edited `"true"` or `1` means OFF on screen. The row
+    // has to answer with the same reading — a row saying `On` over a session that
+    // draws pi's own startup is the panel promising something that never arrives.
+    it("a startupSplash that is not the literal true projects to 'Off', like the gate reads it", () => {
+      for (const value of ["true", 1, "yes", {}, null]) {
+        const items = getUISettingsItems({
+          ...DEFAULT_UI_CONFIG,
+          startupSplash: value as never,
+        });
+        expect(
+          items.find((i) => i.id === "startupSplash")?.currentValue,
+          `startupSplash=${String(value)}`,
+        ).toBe("Off");
+      }
     });
   });
 });
