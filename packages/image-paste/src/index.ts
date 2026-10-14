@@ -4,6 +4,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import type { KeyId } from "@earendil-works/pi-tui";
 
+import { diag, describeError } from "@pi-archimedes/core/log";
+
 import {
   buildPathInsertion,
   clipboardTextForEditor,
@@ -11,6 +13,7 @@ import {
   readClipboardImage,
   readClipboardText,
 } from "./clipboard.js";
+import { runNativePasteRestore } from "./keybinding-offer.js";
 import { registerImagePreview, sendPreviewMessage } from "./preview.js";
 import type { ClipboardImage, PendingImage, ImageMarker } from "./types.js";
 
@@ -284,8 +287,26 @@ export function shutdownImagePaste(): void {
 export default function (pi: ExtensionAPI): void {
   registerImagePaste(pi);
   // Session lifecycle: pi requires per-session ctx for image pasting.
-  pi.on("session_start", (_event, ctx) => {
+  //
+  // Registered at the TOP LEVEL of this factory — never inside another
+  // session_start handler, which would accumulate handlers on /reload
+  // (AGENTS.md). This is also the standalone call site for the native-paste
+  // restoration (ADR 0030 amendment, `suppressNativePaste: false` gives
+  // ctrl+v back to pi); the composed suite runs the same call from its own
+  // session_start handler in meta/src/index.ts, so exactly one path runs it
+  // per session — whichever one loaded the package.
+  pi.on("session_start", async (_event, ctx) => {
     initImagePasteSession(ctx);
+    // A broken keybindings.json must never fail a session start; the detail
+    // goes to the log sink, never the console.
+    try {
+      await runNativePasteRestore(ctx);
+    } catch (error) {
+      diag(
+        "image-paste",
+        `[archimedes:image-paste] native paste restore failed: ${describeError(error)}`,
+      );
+    }
   });
   pi.on("session_shutdown", (_event, _ctx) => {
     shutdownImagePaste();

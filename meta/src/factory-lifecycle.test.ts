@@ -84,6 +84,7 @@ vi.mock("@pi-archimedes/image-paste", () => ({
 }));
 vi.mock("@pi-archimedes/image-paste/keybinding-offer", () => ({
   offerKeybindingFix: vi.fn(),
+  runNativePasteRestore: vi.fn(async () => ({ kind: "suppressed" })),
 }));
 vi.mock("@pi-archimedes/subagent", () => ({
   registerSubagent: vi.fn(),
@@ -103,7 +104,7 @@ const { default: metaFactory } = await import("./index.js");
 const { registerImagePaste, shutdownImagePaste, initImagePasteSession } =
   await import("@pi-archimedes/image-paste");
 
-const { offerKeybindingFix } =
+const { offerKeybindingFix, runNativePasteRestore } =
   await import("@pi-archimedes/image-paste/keybinding-offer");
 const { runOnboarding } = await import("./onboarding/index.js");
 
@@ -304,6 +305,62 @@ describe("first-run sequencing (session_start → offerKeybindingFix, then runOn
     // …and nothing about the failure reaches the console.
     expect(consoleSpy).not.toHaveBeenCalled();
 
+    consoleSpy.mockRestore();
+  });
+});
+
+// ── the composed-suite call site for restoreNativePaste (ADR 0030 amendment) ─
+//
+// `suppressNativePaste: false` has to give ctrl+v back on a machine that already
+// accepted the first-run offer. The composed suite — not image-paste's own
+// standalone handler — is what loads the package here, so meta's session_start
+// is the call site. Registration stays gated: a disabled image-paste must not
+// reach into the user's keybindings.json (ADR 0012 — the plugin gate is
+// registration, not an in-package `enabled` read).
+describe("native-paste restore call site (composed suite)", () => {
+  it("runs once per session with that session's ctx when image-paste was loaded", async () => {
+    const ctx = { ui: { theme: "dark" }, hasUI: true };
+    const { startSession } = freshFactory();
+
+    await startSession(ctx);
+
+    expect(vi.mocked(runNativePasteRestore)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runNativePasteRestore)).toHaveBeenCalledWith(ctx);
+  });
+
+  it("does not run when image-paste is disabled at session start (the plugin gate covers it)", async () => {
+    mockStore["archimedes.imagePaste"] = { enabled: false };
+    const { startSession } = freshFactory();
+
+    await startSession({ ui: { theme: "dark" } });
+
+    expect(vi.mocked(registerImagePaste)).not.toHaveBeenCalled();
+    expect(vi.mocked(runNativePasteRestore)).not.toHaveBeenCalled();
+  });
+
+  it("session_start still resolves when the restore runner rejects, and the failure is diagnosed — never printed", async () => {
+    vi.mocked(runNativePasteRestore).mockRejectedValueOnce(new Error("restore boom"));
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const diagBefore = vi.mocked(diag).mock.calls.length;
+
+    const { startSession } = freshFactory();
+
+    let thrown: unknown = null;
+    try {
+      await startSession({ ui: { theme: "dark" }, hasUI: true });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeNull();
+    const lines = vi
+      .mocked(diag)
+      .mock.calls.slice(diagBefore)
+      .map(([scope, message]) => `${scope} ${message}`);
+    expect(lines.some((l) => l.includes("native paste restore failed") && l.includes("restore boom"))).toBe(
+      true,
+    );
+    expect(consoleSpy).not.toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
 });

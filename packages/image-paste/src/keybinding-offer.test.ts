@@ -43,7 +43,20 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 // re-exported from the package root.
 type Mode = "tui" | "rpc" | "json" | "print";
 
-const { offerKeybindingFix, CREATED_NOTIFY, CREATED_RELOAD_HINT } = await import("./keybinding-offer.js");
+const {
+  offerKeybindingFix,
+  restoreNativePaste,
+  runNativePasteRestore,
+  CREATED_NOTIFY,
+  CREATED_RELOAD_HINT,
+  RESTORED_NOTIFY,
+  RESTORED_RELOAD_HINT,
+} = await import("./keybinding-offer.js");
+
+import type {
+  NativePasteRestoreOutcome,
+  RestoreNativePasteStatus,
+} from "./keybinding-offer.js";
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 
@@ -87,7 +100,7 @@ function cleanupArtifacts(): void {
   }
 }
 
-function makeCtx(mode: Mode, opts?: { withReload?: boolean }) {
+function makeCtx(mode: Mode, opts?: { withReload?: boolean; hasUI?: boolean }) {
   const confirm = vi.fn();
   const notify = vi.fn();
   // Intentionally mirrors the base ExtensionContext the real session_start
@@ -99,7 +112,7 @@ function makeCtx(mode: Mode, opts?: { withReload?: boolean }) {
   const reload = opts?.withReload ? vi.fn(async () => {}) : undefined;
   const ctx = {
     mode,
-    hasUI: true,
+    hasUI: opts?.hasUI ?? true,
     ui: { confirm, notify },
     ...(reload ? { reload } : {}),
   } as unknown as ExtensionContext;
@@ -568,5 +581,502 @@ describe("generated snippet carries pi's published $schema", () => {
     // Byte-exact, because the README quotes this line verbatim and a reader
     // copy-pasting it should get exactly what the suite writes.
     expect(raw).toBe(SNIPPET);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// restoreNativePaste() — ADR 0030's Amendment (2026-10-13)
+// ══════════════════════════════════════════════════════════════════════════
+//
+// The user who accepted the first-run offer holds a keybindings.json that
+// leaves pi's native `app.clipboard.pasteImage` UNBOUND. `suppressNativePaste:
+// false` has to give the key back, which means deleting our own unbinding from
+// a file that already exists — the narrow exception to gate 4's "never rewrite
+// an existing user keybindings file" rule.
+//
+// ACCEPT-SET DECISION, recorded here in the test names (the amendment demands an
+// explicit choice): the accept-set is exactly the two artefacts this suite has
+// ever written, and nothing else —
+//   * pre-#123:  { "app.clipboard.pasteImage": [] }
+//   * since #123: { "$schema": "https://pi.dev/schemas/keybindings.schema.json",
+//                   "app.clipboard.pasteImage": [] }
+// `$schema` counts as ours ONLY when it carries pi's published URL (that is
+// literally what the suite writes); any other second key is foreign. The set is
+// never widened to "any object containing app.clipboard.pasteImage: []".
+
+const UNBIND_KEY = "app.clipboard.pasteImage";
+const SCHEMA_URL = "https://pi.dev/schemas/keybindings.schema.json";
+/** What the suite wrote before PR #123 added `$schema`. */
+const ARTEFACT_PRE_123 = `{ "${UNBIND_KEY}": [] }`;
+/** Byte-for-byte what `offerKeybindingFix` writes today (SNIPPET above). */
+const ARTEFACT_POST_123 = `{ "$schema": "${SCHEMA_URL}", "${UNBIND_KEY}": [] }`;
+
+/** The `globalThis` guard key the surfacing rule mandates (contract clause 5). */
+const NOTICE_KEY = Symbol.for("pi-archimedes:image-paste:restore-notified");
+
+function clearNoticeGuard(): void {
+  delete (globalThis as Record<symbol, unknown>)[NOTICE_KEY];
+}
+
+/** Ask for the key back: `suppressNativePaste: false`. */
+function askForNativePaste(): void {
+  writeSettings({ [NAMESPACE]: { suppressNativePaste: false } });
+}
+
+function writeKeybindings(content: string): void {
+  fs.writeFileSync(keybindingsPath(), content, "utf-8");
+}
+
+/** Narrow a status, failing loudly with the kind actually seen. */
+function asUntouched(s: RestoreNativePasteStatus | NativePasteRestoreOutcome) {
+  if (s.kind !== "untouched") {
+    return expect.fail(`expected status "untouched", got "${s.kind}"`);
+  }
+  return s as Extract<RestoreNativePasteStatus, { kind: "untouched" }>;
+}
+
+describe("restoreNativePaste — the accept-set (only our own artefact is rewritten)", () => {
+  beforeEach(clearNoticeGuard);
+
+  it("accept-set INCLUDES the pre-#123 artefact { app.clipboard.pasteImage: [] }: rewritten to {} and a reload is required", () => {
+    writeKeybindings(ARTEFACT_PRE_123);
+
+    const status = restoreNativePaste();
+
+    expect(status.kind).toBe("restored");
+    expect(status.path).toBe(keybindingsPath());
+    // The rewrite only ever REMOVES the key: the file is left as an empty object.
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe("{}");
+    // Nothing asked for yet — the caller owns the reload, so the status is what
+    // tells it that pi must re-read keybindings.json.
+    expect(
+      (status as Extract<RestoreNativePasteStatus, { kind: "restored" }>)
+        .reloadRequired,
+    ).toBe(true);
+  });
+
+  it("accept-set INCLUDES the $schema + app.clipboard.pasteImage: [] pair — byte-for-byte what the suite writes since PR #123", () => {
+    // The decision the amendment asks for explicitly: `$schema` is OUR key when
+    // it points at pi's published schema, because that is the file we wrote.
+    writeKeybindings(ARTEFACT_POST_123);
+
+    const status = restoreNativePaste();
+
+    expect(status.kind).toBe("restored");
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe("{}");
+  });
+
+  it("accept-set does NOT widen: a $schema carrying any other URL is a foreign key, so the file is untouched byte-for-byte", () => {
+    const foreign = `{ "$schema": "https://example.com/keybindings.schema.json", "${UNBIND_KEY}": [] }`;
+    writeKeybindings(foreign);
+
+    const status = asUntouched(restoreNativePaste());
+
+    expect(status.reason).toBe("extra-key");
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(foreign);
+  });
+
+  it("accept-set does NOT widen to 'any object containing app.clipboard.pasteImage: []': an extra user key means untouched, and the status carries the path plus the one-line manual edit", () => {
+    const foreign = `{ "$schema": "${SCHEMA_URL}", "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`;
+    writeKeybindings(foreign);
+
+    const status = asUntouched(restoreNativePaste());
+
+    // The status is actionable on its own: path + the exact edit to make.
+    expect(status.path).toBe(keybindingsPath());
+    expect(status.manualEdit).toContain(keybindingsPath());
+    expect(status.manualEdit).toContain(UNBIND_KEY);
+    expect(status.manualEdit).not.toContain("\n");
+    // Byte-for-byte untouched — no rewrite, no reformatting, no trailing newline.
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(foreign);
+    // And the never-touch path leaves no write artefact behind.
+    expect(fs.existsSync(`${keybindingsPath()}.tmp`)).toBe(false);
+  });
+
+  it("a non-empty app.clipboard.pasteImage value is the user's binding, not our artefact: untouched", () => {
+    const owned = `{ "${UNBIND_KEY}": ["ctrl+v"] }`;
+    writeKeybindings(owned);
+
+    const status = asUntouched(restoreNativePaste());
+
+    expect(status.reason).toBe("binding-not-empty");
+    expect(status.manualEdit).toContain(UNBIND_KEY);
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(owned);
+  });
+
+  it("content that does not parse is left byte-for-byte alone and never throws", () => {
+    const raw = `{ "${UNBIND_KEY}": [] // hand-edited, not valid JSON`;
+    writeKeybindings(raw);
+
+    let status: RestoreNativePasteStatus | undefined;
+    expect(() => {
+      status = restoreNativePaste();
+    }).not.toThrow();
+
+    expect(asUntouched(status!).reason).toBe("unparsable");
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(raw);
+  });
+
+  it("JSON that is not an object (an array) is not our artefact: untouched", () => {
+    const raw = `["${UNBIND_KEY}"]`;
+    writeKeybindings(raw);
+
+    expect(asUntouched(restoreNativePaste()).reason).toBe("not-an-object");
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(raw);
+  });
+
+  it("a missing keybindings.json is a no-op: nothing written, status 'missing'", () => {
+    expect(fs.existsSync(keybindingsPath())).toBe(false);
+
+    const status = restoreNativePaste();
+
+    expect(status.kind).toBe("missing");
+    expect(fs.existsSync(keybindingsPath())).toBe(false);
+  });
+
+  it("a keybindings.json that cannot be read (a directory where the file should be) is 'untouched (unreadable)', never a throw", () => {
+    // The one branch the contract did not name: the extension must not crash on
+    // it and must not try to write over it.
+    fs.mkdirSync(keybindingsPath(), { recursive: true });
+
+    let status: RestoreNativePasteStatus | undefined;
+    expect(() => {
+      status = restoreNativePaste();
+    }).not.toThrow();
+
+    const untouched = asUntouched(status!);
+    expect(untouched.reason).toBe("unreadable");
+    expect(untouched.manualEdit).toContain(UNBIND_KEY);
+    expect(fs.statSync(keybindingsPath()).isDirectory()).toBe(true);
+  });
+
+  it("restoreNativePaste is silent by itself — it takes no ctx (nothing to notify with) and writes no log line", () => {
+    // Contract clause 2: "It returns a status; it never logs or notifies
+    // itself." Surfacing belongs to the caller, so one session cannot produce
+    // two messages and a headless caller stays silent on its own.
+    expect(restoreNativePaste.length).toBe(0);
+
+    const logFile = join(tempDir, `diag-${process.pid}-silent.log`);
+    writeKeybindings(ARTEFACT_POST_123);
+    process.env.PI_ARCHIMEDES_LOG = logFile;
+    let status: RestoreNativePasteStatus | undefined;
+    try {
+      status = restoreNativePaste();
+    } finally {
+      delete process.env.PI_ARCHIMEDES_LOG;
+    }
+
+    // It did the work …
+    expect(status!.kind).toBe("restored");
+    // … and recorded nothing: the log sink stays untouched (it is never created).
+    expect(fs.existsSync(logFile)).toBe(false);
+  });
+
+  it("a file already reading {} is 'already-restored' and is NOT rewritten — bytes and mtime both untouched", () => {
+    // Deliberately NOT the bytes we would write, so a rewrite that produces the
+    // same *value* is still caught, and a fixed old mtime catches a rewrite that
+    // would produce identical bytes.
+    const raw = "{\n}\n";
+    writeKeybindings(raw);
+    const stamp = new Date("2020-01-01T12:00:00.000Z");
+    fs.utimesSync(keybindingsPath(), stamp, stamp);
+
+    const status = restoreNativePaste();
+
+    expect(status.kind).toBe("already-restored");
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(raw);
+    expect(fs.statSync(keybindingsPath()).mtimeMs).toBe(stamp.getTime());
+  });
+
+  it("a symlinked keybindings.json stays a symlink: the link survives, its target is replaced atomically (new inode, {} content), and no tmp file lands beside the link", () => {
+    // The amendment's consequence: the write must go through
+    // writeAtomicPreservingSymlinks, not the offer's plain tmp+rename-onto-path
+    // (which would replace the link with a regular file in the agent dir) and
+    // not a plain writeFileSync (which would write in place, same inode).
+    const realDir = join(tempDir, `link-target-${process.pid}`);
+    const realPath = join(realDir, "keybindings.json");
+    fs.mkdirSync(realDir, { recursive: true });
+    fs.writeFileSync(realPath, ARTEFACT_POST_123, "utf-8");
+    fs.symlinkSync(realPath, keybindingsPath());
+    const inodeBefore = fs.statSync(realPath).ino;
+
+    const status = restoreNativePaste();
+
+    expect(status.kind).toBe("restored");
+    // Still a symlink, still pointing where the user pointed it.
+    expect(fs.lstatSync(keybindingsPath()).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(keybindingsPath())).toBe(realPath);
+    // The content change landed on the TARGET, and via rename (a new inode),
+    // i.e. atomically — not as an in-place write.
+    expect(fs.readFileSync(realPath, "utf-8")).toBe("{}");
+    expect(fs.statSync(realPath).ino).not.toBe(inodeBefore);
+    expect(fs.existsSync(`${realPath}.tmp`)).toBe(false);
+    expect(fs.existsSync(`${keybindingsPath()}.tmp`)).toBe(false);
+  });
+
+  it("a write that fails yields 'failed' with the path and the manual edit, never throws, and leaves nothing behind", () => {
+    writeKeybindings(ARTEFACT_POST_123);
+    // Read-only agent dir: the tmp write fails with EACCES, so the rename never
+    // happens and the live file must survive.
+    fs.chmodSync(tempDir, 0o555);
+    let status: RestoreNativePasteStatus | undefined;
+    try {
+      expect(() => {
+        status = restoreNativePaste();
+      }).not.toThrow();
+    } finally {
+      fs.chmodSync(tempDir, 0o755);
+    }
+
+    const failed = status!;
+    if (failed.kind !== "failed") {
+      return expect.fail(`expected status "failed", got "${failed.kind}"`);
+    }
+    expect(failed.path).toBe(keybindingsPath());
+    expect(failed.error.length).toBeGreaterThan(0);
+    expect(failed.manualEdit).toContain(keybindingsPath());
+    expect(failed.manualEdit).toContain(UNBIND_KEY);
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(ARTEFACT_POST_123);
+  });
+});
+
+describe("runNativePasteRestore — the caller surfaces the outcome (once per process, reload-stable)", () => {
+  beforeEach(clearNoticeGuard);
+
+  it("the DEFAULT (suppressNativePaste absent) path writes nothing and notifies nothing", async () => {
+    writeKeybindings(ARTEFACT_POST_123);
+    const { ctx, notify } = makeCtx("tui", { withReload: true });
+
+    const outcome = await runNativePasteRestore(ctx);
+
+    expect(outcome.kind).toBe("suppressed");
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(ARTEFACT_POST_123);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("an explicit suppressNativePaste: true behaves exactly like the default", async () => {
+    writeSettings({ [NAMESPACE]: { suppressNativePaste: true } });
+    writeKeybindings(ARTEFACT_POST_123);
+    const { ctx, notify } = makeCtx("tui", { withReload: true });
+
+    const outcome = await runNativePasteRestore(ctx);
+
+    expect(outcome.kind).toBe("suppressed");
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(ARTEFACT_POST_123);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("the suite-owned artefact becomes {} and a reload is requested (reload on the ctx → reload() runs and the status no longer requires /reload)", async () => {
+    askForNativePaste();
+    writeKeybindings(ARTEFACT_POST_123);
+    const { ctx, notify, reload } = makeCtx("tui", { withReload: true });
+
+    const outcome = await runNativePasteRestore(ctx);
+
+    expect(outcome.kind).toBe("restored");
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe("{}");
+    expect(reload).toHaveBeenCalledTimes(1);
+    if (outcome.kind !== "restored") return expect.fail("expected restored");
+    // The reload ran, so pi has re-read keybindings.json: nothing left to ask.
+    expect(outcome.reloadRequired).toBe(false);
+    expect(
+      callArgs(notify).some((c) => c[0] === RESTORED_NOTIFY && c[1] === "info"),
+    ).toBe(true);
+    expect(CREATED_NOTIFY).toContain("reloading now");
+    expect(RESTORED_NOTIFY).toContain("reloading now");
+  });
+
+  it("on a ctx WITHOUT reload the restored status says /reload is required and the hint is notified", async () => {
+    askForNativePaste();
+    writeKeybindings(ARTEFACT_PRE_123);
+    const { ctx, notify } = makeCtx("tui");
+
+    const outcome = await runNativePasteRestore(ctx);
+
+    if (outcome.kind !== "restored") return expect.fail(`expected restored, got ${outcome.kind}`);
+    expect(outcome.reloadRequired).toBe(true);
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe("{}");
+    expect(
+      callArgs(notify).some((c) => c[0] === RESTORED_RELOAD_HINT && c[1] === "info"),
+    ).toBe(true);
+    expect(RESTORED_RELOAD_HINT).toContain("/reload");
+  });
+
+  it("an untouched file is notified exactly once, with a message naming the file path and app.clipboard.pasteImage", async () => {
+    askForNativePaste();
+    const foreign = `{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`;
+    writeKeybindings(foreign);
+    const { ctx, notify } = makeCtx("tui");
+
+    const outcome = await runNativePasteRestore(ctx);
+
+    expect(outcome.kind).toBe("untouched");
+    expect(notify).toHaveBeenCalledTimes(1);
+    const [message, level] = notify.mock.calls[0] as [string, string];
+    expect(level).toBe("warning");
+    expect(message).toContain(keybindingsPath());
+    expect(message).toContain(UNBIND_KEY);
+    // Byte-for-byte unchanged, and no rewrite attempt of any kind.
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(foreign);
+  });
+
+  it("a plain second session_start in the same process stays silent for the same untouched file", async () => {
+    askForNativePaste();
+    const foreign = `{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`;
+    writeKeybindings(foreign);
+
+    const first = makeCtx("tui");
+    await runNativePasteRestore(first.ctx);
+    expect(first.notify).toHaveBeenCalledTimes(1);
+
+    const second = makeCtx("tui");
+    const outcome = await runNativePasteRestore(second.ctx);
+
+    expect(outcome.kind).toBe("untouched");
+    expect(second.notify).not.toHaveBeenCalled();
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(foreign);
+  });
+
+  it("the once-guard is RELOAD-STABLE, not merely per-session: after vi.resetModules() + re-import (what /reload does to the module registry) the caller still does not notify again", async () => {
+    // A module-level `let` passes the "second session_start" test above and
+    // STILL re-warns here, because pi re-evaluates the extension module on
+    // every load: loadExtensionModule() builds a fresh jiti with
+    // `moduleCache: false` (pi 1.2.0 dist/core/extensions/loader.js:477-481) and
+    // ctx.reload() clears the cached factory first (dist/core/resource-loader.js:359
+    // → clearExtensionCache(), dist/core/extensions/loader.js:89-93).
+    // `globalThis` is the only thing that survives it — so the guard lives under
+    // Symbol.for("pi-archimedes:image-paste:restore-notified").
+    askForNativePaste();
+    const foreign = `{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`;
+    writeKeybindings(foreign);
+
+    const first = makeCtx("tui");
+    await runNativePasteRestore(first.ctx);
+    expect(first.notify).toHaveBeenCalledTimes(1);
+
+    // /reload: a brand-new module instance, same process, same globalThis.
+    vi.resetModules();
+    const reloaded = await import("./keybinding-offer.js");
+    expect(reloaded.runNativePasteRestore).not.toBe(runNativePasteRestore);
+
+    const second = makeCtx("tui");
+    await reloaded.runNativePasteRestore(second.ctx);
+
+    expect(second.notify).not.toHaveBeenCalled();
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(foreign);
+  });
+
+  it("the guard lives on globalThis under the mandated symbol key", async () => {
+    askForNativePaste();
+    writeKeybindings(`{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`);
+    expect((globalThis as Record<symbol, unknown>)[NOTICE_KEY]).toBeUndefined();
+
+    await runNativePasteRestore(makeCtx("tui").ctx);
+
+    expect((globalThis as Record<symbol, unknown>)[NOTICE_KEY]).toBe(true);
+  });
+
+  it("no notify at all when ctx.hasUI is false — and a headless run does not spend the guard", async () => {
+    askForNativePaste();
+    const foreign = `{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`;
+    writeKeybindings(foreign);
+
+    const headless = makeCtx("rpc", { hasUI: false });
+    const headlessOutcome = await runNativePasteRestore(headless.ctx);
+    expect(headlessOutcome.kind).toBe("untouched");
+    expect(headless.notify).not.toHaveBeenCalled();
+
+    // A later TUI session still gets its one warning.
+    const tui = makeCtx("tui");
+    await runNativePasteRestore(tui.ctx);
+    expect(tui.notify).toHaveBeenCalledTimes(1);
+    expect((tui.notify.mock.calls[0] as [string, string])[1]).toBe("warning");
+  });
+
+  it("a second session on the already-restored {} file notifies nothing and writes nothing", async () => {
+    askForNativePaste();
+    writeKeybindings("{}");
+    const stamp = new Date("2020-01-01T12:00:00.000Z");
+    fs.utimesSync(keybindingsPath(), stamp, stamp);
+
+    const first = makeCtx("tui", { withReload: true });
+    const outcome = await runNativePasteRestore(first.ctx);
+
+    expect(outcome.kind).toBe("already-restored");
+    expect(first.notify).not.toHaveBeenCalled();
+    expect(first.reload).not.toHaveBeenCalled();
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe("{}");
+    expect(fs.statSync(keybindingsPath()).mtimeMs).toBe(stamp.getTime());
+
+    const second = makeCtx("tui", { withReload: true });
+    expect((await runNativePasteRestore(second.ctx)).kind).toBe("already-restored");
+    expect(second.notify).not.toHaveBeenCalled();
+  });
+
+  it("a failed write is surfaced as one warning naming the path and the key, and never throws", async () => {
+    askForNativePaste();
+    writeKeybindings(ARTEFACT_POST_123);
+    const { ctx, notify } = makeCtx("tui");
+    fs.chmodSync(tempDir, 0o555);
+    let outcome: NativePasteRestoreOutcome | undefined;
+    try {
+      outcome = await runNativePasteRestore(ctx);
+    } finally {
+      fs.chmodSync(tempDir, 0o755);
+    }
+
+    expect(outcome!.kind).toBe("failed");
+    expect(notify).toHaveBeenCalledTimes(1);
+    const [message, level] = notify.mock.calls[0] as [string, string];
+    expect(level).toBe("warning");
+    expect(message).toContain(keybindingsPath());
+    expect(message).toContain(UNBIND_KEY);
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(ARTEFACT_POST_123);
+  });
+
+  it("diag carries the detail, so the outcome is recorded even where notify cannot run", async () => {
+    // `diag` is opt-in (PI_ARCHIMEDES_LOG names the file), which is exactly why
+    // notify is mandatory for the actionable case — but with the log on, the
+    // path and the key have to be in it.
+    const logFile = join(tempDir, `diag-${process.pid}-untouched.log`);
+    askForNativePaste();
+    writeKeybindings(`{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`);
+    process.env.PI_ARCHIMEDES_LOG = logFile;
+    try {
+      await runNativePasteRestore(makeCtx("rpc", { hasUI: false }).ctx);
+    } finally {
+      delete process.env.PI_ARCHIMEDES_LOG;
+    }
+
+    expect(fs.existsSync(logFile)).toBe(true);
+    const log = fs.readFileSync(logFile, "utf-8");
+    expect(log).toContain("image-paste");
+    expect(log).toContain(keybindingsPath());
+    expect(log).toContain(UNBIND_KEY);
+  });
+
+  it("every session's untouched outcome is logged while notify stays silenced after the first", async () => {
+    // `diag` is the detailed channel and may fire every session; the notify is
+    // the once-per-process surface. Together they are the surfacing rule.
+    askForNativePaste();
+    const foreign = `{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`;
+    writeKeybindings(foreign);
+    const logFile = join(tempDir, `diag-${process.pid}-twice.log`);
+    process.env.PI_ARCHIMEDES_LOG = logFile;
+    const first = makeCtx("tui");
+    const second = makeCtx("tui");
+    try {
+      await runNativePasteRestore(first.ctx);
+      await runNativePasteRestore(second.ctx);
+    } finally {
+      delete process.env.PI_ARCHIMEDES_LOG;
+    }
+    const log: string = fs.readFileSync(logFile, "utf-8");
+    expect(
+      log.split("\n").filter((line: string) => line.includes(keybindingsPath())).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(first.notify).toHaveBeenCalledTimes(1);
+    expect(second.notify).not.toHaveBeenCalled();
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(foreign);
   });
 });
