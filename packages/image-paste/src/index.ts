@@ -174,7 +174,12 @@ export function registerImagePaste(pi: ExtensionAPI): void {
 
   // Register shortcuts (once)
   const pasteFromClipboard = async (ctx: ExtensionContext): Promise<void> => {
-    if (_pasting) return; // Mutex: prevent concurrent paste operations
+    // Mutex: prevent concurrent paste operations. It is only ever held for as
+    // long as one keypress is willing to wait — every read it awaits is
+    // bounded (a `spawnSync` timeout per CLI candidate,
+    // `NATIVE_READ_TIMEOUT_MS` per native read) — because an unbounded read
+    // here would hold the mutex forever and take the key out of service.
+    if (_pasting) return;
     if (!_queue || !ctx.hasUI) return;
     _pasting = true;
     try {

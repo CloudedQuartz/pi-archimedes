@@ -10,6 +10,18 @@ import type { ClipboardImage } from "./types.js";
 
 const LIST_TYPES_TIMEOUT_MS = 1000;
 const READ_TIMEOUT_MS = 5000;
+/**
+ * How long a read through the native clipboard helper may take before it counts
+ * as failed — the same budget one CLI read gets, because a hung X11/Wayland
+ * session blocks in exactly the same place a hung `wl-paste` does.
+ *
+ * The deadline cannot cancel the native call; what it bounds is how long the
+ * keypress waits for it. That matters more than a slow read would suggest: the
+ * `ctrl+v` handler in `index.ts` holds a `_pasting` mutex for the lifetime of a
+ * dispatch, so an unbounded read that never settles leaves that mutex held and
+ * every later `ctrl+v` a silent no-op until the session restarts.
+ */
+export const NATIVE_READ_TIMEOUT_MS = READ_TIMEOUT_MS;
 const MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 const SUPPORTED_IMAGE_MIME_TYPES = [
   "image/png",
@@ -28,6 +40,42 @@ interface CommandResult {
 export interface ClipboardReadResult {
   available: boolean;
   image: ClipboardImage | null;
+  /** Set when a reader existed but did not answer inside the deadline. */
+  timeout?: Error;
+}
+
+/** A native clipboard read that outlived {@link NATIVE_READ_TIMEOUT_MS}. */
+class NativeReadTimeoutError extends Error {
+  constructor(operation: string) {
+    super(`${operation} timed out after ${NATIVE_READ_TIMEOUT_MS}ms`);
+    this.name = "NativeReadTimeoutError";
+  }
+}
+
+/**
+ * Give a native clipboard read a deadline. `undefined` (no helper, no such
+ * method) passes straight through; a rejection passes through unchanged, so a
+ * transfer failure still reads as a failure rather than as an empty clipboard.
+ */
+async function withinNativeReadDeadline<T>(
+  read: Promise<T> | undefined,
+  operation: string,
+): Promise<T | undefined> {
+  if (read === undefined) {
+    return undefined;
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => reject(new NativeReadTimeoutError(operation)), NATIVE_READ_TIMEOUT_MS);
+      read.then(resolve, reject);
+    });
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function isErrnoException(error: Error): error is NodeJS.ErrnoException {
@@ -77,7 +125,10 @@ export async function readClipboardImageViaNativeModule(
       return { available: false, image: null };
     }
 
-    const bytes = await native.getImage();
+    const bytes = await withinNativeReadDeadline(
+      native.getImage(),
+      "Native clipboard image read",
+    );
     if (!bytes || bytes.length === 0) {
       return { available: true, image: null };
     }
@@ -107,7 +158,14 @@ export async function readClipboardImageViaNativeModule(
         mimeType: "image/png",
       },
     };
-  } catch {
+  } catch (error) {
+    // A read that never answered is not the same event as a reader that is not
+    // installed, so it is carried out as a timeout rather than flattened into
+    // "unavailable": the caller reports the deadline, not "install a clipboard
+    // reader", and the keypress stops waiting.
+    if (error instanceof NativeReadTimeoutError) {
+      return { available: false, image: null, timeout: error };
+    }
     return { available: false, image: null };
   }
 }
@@ -405,6 +463,14 @@ export async function readClipboardImage(options?: {
     return null;
   }
 
+  // Nothing answered. If the reason is that a helper never replied, say that —
+  // "install wl-clipboard or xclip" would be the wrong advice for a machine
+  // that has one and is not answering.
+  const timeout = readerResults.find((result) => result.timeout)?.timeout;
+  if (timeout) {
+    throw timeout;
+  }
+
   throw new Error(getUnavailableReaderMessage(platform));
 }
 
@@ -427,10 +493,28 @@ export async function readClipboardImage(options?: {
  * A rejected transfer is *not* swallowed: pi lets it reach
  * `handleClipboardPaste`'s catch and show a failure, and the caller here does
  * the same, so a clipboard that failed to answer is distinguishable from one
- * that answered "no files".
+ * that answered "no files". A read that never answered at all is the one
+ * exception, and it is a deadline rather than a verdict — see
+ * {@link NATIVE_READ_TIMEOUT_MS}.
  */
 export async function readClipboardFilePaths(): Promise<string[] | null> {
-  const paths = await getNativeClipboard()?.getFilePaths?.();
+  let paths: string[] | null | undefined;
+  try {
+    paths = await withinNativeReadDeadline(
+      getNativeClipboard()?.getFilePaths?.(),
+      "Clipboard file path read",
+    );
+  } catch (error) {
+    if (error instanceof NativeReadTimeoutError) {
+      // Unlike a transfer failure, which is passed up as pi passes it up, a read
+      // that never answered falls through to the text branch: the caller's next
+      // question ("is there text?") is independent of this one, and a hung path
+      // read should not cost the user a text paste. pi is still sitting in this
+      // call when we return.
+      return null;
+    }
+    throw error;
+  }
   return paths?.length ? paths : null;
 }
 
@@ -504,7 +588,14 @@ export async function readClipboardText(options?: {
   }
 
   try {
-    return (await getNativeClipboard()?.getText?.()) || null;
+    // Bounded for the same reason as the other two native reads: a helper that
+    // stops answering must not hold the keypress (and the mutex) open. A
+    // timeout reads as "no text" here, which is what the catch already means.
+    const text = await withinNativeReadDeadline(
+      getNativeClipboard()?.getText?.(),
+      "Clipboard text read",
+    );
+    return text || null;
   } catch {
     return null;
   }

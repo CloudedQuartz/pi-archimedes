@@ -40,6 +40,7 @@ import {
   buildPathInsertion,
   clipboardTextForEditor,
   isImageFilePath,
+  NATIVE_READ_TIMEOUT_MS,
   readClipboardFilePaths,
   readClipboardImage,
   readClipboardImageViaNativeModule,
@@ -553,6 +554,138 @@ describe("isImageFilePath", () => {
       expect(isImageFilePath(filePath)).toBe(false);
     },
   );
+});
+
+describe("native clipboard reads are bounded, so ctrl+v cannot hang", () => {
+  // The pi clipboard contract has no deadline: `getImage`/`getText`/`getFilePaths`
+  // are plain promises, and an unresponsive X11/Wayland session blocks inside
+  // the native call. The shortcut handler holds a `_pasting` mutex for the
+  // lifetime of a dispatch, so one read that never settles makes every later
+  // `ctrl+v` a silent no-op for the rest of the session — a dead key, with
+  // nothing on screen to explain it. Every native read therefore carries the
+  // same budget as one CLI read (`READ_TIMEOUT_MS`), which is what these
+  // promises are measured against.
+  const neverSettles = <T>(): Promise<T> => new Promise<T>(() => {});
+  const missingCLITools = (): void => {
+    mockSpawnSync.mockImplementation(() => ({
+      status: null,
+      stdout: Buffer.alloc(0),
+      error: Object.assign(new Error("spawnSync ENOENT"), { code: "ENOENT" }),
+    }));
+  };
+
+  it("readClipboardImage rejects with a timeout rather than hanging on a silent helper", async () => {
+    vi.useFakeTimers();
+    try {
+      missingCLITools();
+      mockGetNativeClipboard.mockReturnValue({ getImage: neverSettles });
+      const read = readClipboardImage({
+        platform: "linux",
+        environment: { WAYLAND_DISPLAY: "wayland-0" },
+      });
+      const outcome = read.then(
+        () => "resolved",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+
+      // Not a hair-trigger: a slow-but-living helper is not cut off early.
+      await vi.advanceTimersByTimeAsync(NATIVE_READ_TIMEOUT_MS / 2);
+      await expect(Promise.race([outcome, Promise.resolve("still running")])).resolves.toBe(
+        "still running",
+      );
+
+      await vi.advanceTimersByTimeAsync(NATIVE_READ_TIMEOUT_MS);
+      await expect(outcome).resolves.toMatch(/timed out/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("readClipboardFilePaths falls through to the next branch when the helper never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      mockGetNativeClipboard.mockReturnValue({ getFilePaths: neverSettles });
+      const read = readClipboardFilePaths();
+      let settled = false;
+      const outcome = read.then((paths) => {
+        settled = true;
+        return paths;
+      });
+
+      await vi.advanceTimersByTimeAsync(NATIVE_READ_TIMEOUT_MS / 2);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(NATIVE_READ_TIMEOUT_MS);
+      // `null`, not a rejection: a hung file-path read must not cost the user
+      // the text that is also on the clipboard.
+      await expect(outcome).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("readClipboardText reads no text when the helper never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      // No CLI candidates on this platform, so the helper is the only reader.
+      mockGetNativeClipboard.mockReturnValue({ getText: neverSettles });
+      const read = readClipboardText({ platform: "darwin", environment: {} });
+      let settled = false;
+      const outcome = read.then((text) => {
+        settled = true;
+        return text;
+      });
+
+      await vi.advanceTimersByTimeAsync(NATIVE_READ_TIMEOUT_MS / 2);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(NATIVE_READ_TIMEOUT_MS);
+      await expect(outcome).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still returns bytes that arrive inside the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      missingCLITools();
+      mockGetNativeClipboard.mockReturnValue({
+        getImage: () => {
+          return new Promise<Uint8Array>((resolve) => {
+            setTimeout(() => resolve(new Uint8Array([9, 8, 7])), 100);
+          });
+        },
+      });
+      const read = readClipboardImage({
+        platform: "linux",
+        environment: { WAYLAND_DISPLAY: "wayland-0" },
+      });
+      await vi.advanceTimersByTimeAsync(200);
+      await expect(read).resolves.toEqual({ bytes: new Uint8Array([9, 8, 7]), mimeType: "image/png" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("still gives PowerShell a turn when the native helper hangs (win32)", async () => {
+    vi.useFakeTimers();
+    try {
+      mockGetNativeClipboard.mockReturnValue({ getImage: neverSettles });
+      // PowerShell answers "no image" (non-zero exit / empty stdout).
+      mockSpawn.mockImplementation(() => createMockChildProcess("", 1));
+
+      const read = readClipboardImage({ platform: "win32", environment: {} });
+      await vi.advanceTimersByTimeAsync(NATIVE_READ_TIMEOUT_MS + 50);
+
+      // The timeout must not short-circuit the platform fallback: an answer
+      // from PowerShell is an answer, so the read resolves quietly instead of
+      // reporting the hung native helper.
+      await expect(read).resolves.toBeNull();
+      expect(mockSpawn).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("clipboardTextForEditor: what may go through pasteToEditor", () => {
