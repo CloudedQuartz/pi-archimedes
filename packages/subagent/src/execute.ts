@@ -1,4 +1,5 @@
 import { getBridge } from "@pi-archimedes/core/bridge";
+import type { EventBus } from "@earendil-works/pi-coding-agent";
 import { spawnSubagent, resolveModel } from "./spawn.js";
 import { dispatchViaBridge, buildFailedResult } from "./dispatch.js";
 import { streamEvents } from "./stream.js";
@@ -14,6 +15,10 @@ export interface ExecuteOptions {
   cwd: string | undefined;
   signal: AbortSignal | undefined;
   onUpdate: ((progress: SubagentProgress) => void) | undefined;
+  /** The parent's host handle (`pi.events`) — forwarded to the ask bridge and to
+   *  the todo announcements in `streamEvents`. Neither is an extension, so
+   *  neither can reach a handle of its own. */
+  events: EventBus;
   /** The subagent tool-call id (the tool's `_id`) — rides the dispatch frame
    *  for Client correlation; `undefined` → the frame's `toolCallId` is absent.
    *  In `executeParallel` all N tasks share the single subagent tool-call's id. */
@@ -107,11 +112,13 @@ export async function executeSubagent(options: ExecuteOptions): Promise<Subagent
       cwd: options.cwd,
       signal: options.signal,
       agent: options.agentConfig,
+      events: options.events,
     });
 
     const result = await streamEvents(child, {
       agent: agentName,
       task: options.task,
+      events: options.events,
       onProgress: (progress: SubagentProgress) => {
         options.onUpdate?.(progress);
       },
@@ -175,6 +182,7 @@ export async function executeParallel(options: {
   tasks: Array<{ agent: string | undefined; agentConfig: AgentConfig | undefined; task: string; model: string | undefined; activeModel: string | undefined; cwd: string | undefined; toolCallId?: string }>;
   signal: AbortSignal | undefined;
   onUpdate: ((progress: SubagentProgress[]) => void) | undefined;
+  events: EventBus;
 }): Promise<SubagentResult[]> {
   // Pre-fill one pending slot per task, keyed by task index (NOT agent name).
   // This keeps all N lines stacked from t=0 in stable task order, with no
@@ -206,6 +214,7 @@ export async function executeParallel(options: {
       executeSubagent({
         ...taskDef,
         signal: options.signal,
+        events: options.events,
         onUpdate: (progress: SubagentProgress) => {
           // Store latest progress in this task's stable slot (by index).
           latestProgress[index] = progress;

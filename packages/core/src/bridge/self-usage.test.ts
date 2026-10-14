@@ -1,30 +1,57 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getBus, Events } from "../bus.js";
+import { Events } from "../events.js";
 import { registerSelfUsage } from "./self-usage.js";
 
 /**
- * Bus discipline (load-bearing): the bus has NO reset seam, `emit` with zero
- * subscribers queues the payload globally, and `on()` replays queued events
- * WITHOUT removing them. So EVERY test subscribes a per-test listener FIRST,
- * then invokes the handler, asserts only on that test's captured array, and
- * unsubscribes via the `on` return value.
+ * The emitter emits on the handle it was handed (`pi.events`), so every test
+ * builds its own handle and subscribes its own listener before invoking the
+ * handler. Nothing is process-wide any more, so there is no queue and no replay
+ * to design around — which is the point of the migration.
  */
+function fakeBus() {
+  const listeners = new Map<string, Array<(data: unknown) => void>>();
+  return {
+    emit(channel: string, data: unknown): void {
+      for (const handler of [...(listeners.get(channel) ?? [])]) handler(data);
+    },
+    on(channel: string, handler: (data: unknown) => void): () => void {
+      const subs = listeners.get(channel) ?? [];
+      subs.push(handler);
+      listeners.set(channel, subs);
+      return () => {
+        const current = listeners.get(channel) ?? [];
+        const idx = current.indexOf(handler);
+        if (idx !== -1) current.splice(idx, 1);
+      };
+    },
+  };
+}
+
+/** The handle this test's emitter was handed. Fresh per test. */
+let bus: ReturnType<typeof fakeBus>;
+
+beforeEach(() => {
+  bus = fakeBus();
+});
+
+/** Subscribe to COST_UPDATE on that handle. */
 function captureCostUpdates(): { events: unknown[]; done: () => void } {
-  const events: unknown[] = [];
-  const unsub = getBus().on(Events.COST_UPDATE, (p) => events.push(p));
-  return { events, done: unsub };
+  const captured: unknown[] = [];
+  const unsub = bus.on(Events.COST_UPDATE, (p: unknown) => captured.push(p));
+  return { events: captured, done: unsub };
 }
 
 /**
  * Register and capture the turn_end handler, using the repo's mock-ExtensionAPI
  * idiom (verbatim from bridge/index.test.ts — a plain object fails `tsc` with
  * TS2740; the `as unknown as ExtensionAPI` cast and the `mock.calls` re-typing
- * are BOTH required).
+ * are BOTH required). The handle the emitter gets is this test's bus, so the
+ * test can subscribe to the same one.
  */
 function registerAndGetTurnEndHandler(): (e: unknown, ctx: unknown) => void {
   const onSpy = vi.fn();
-  registerSelfUsage({ on: onSpy } as unknown as ExtensionAPI);
+  registerSelfUsage({ on: onSpy, events: bus } as unknown as ExtensionAPI);
   const calls = onSpy.mock.calls as Array<[string, (e: unknown, ctx: unknown) => void]>;
   const handler = calls.find(([event]) => event === "turn_end")![1];
   expect(handler).toBeTruthy();
@@ -139,6 +166,57 @@ describe("bridge independence", () => {
       }, { mode: "tui" });
       expect(events).toHaveLength(1);
       expect((events[0] as { source: string }).source).toBe("main");
+    } finally {
+      done();
+    }
+  });
+});
+
+// ── 5. the queue is gone, and nothing needed it ───────────────────────
+
+describe("no pre-subscriber queue", () => {
+  /**
+   * The retired `globalThis` bus queued an emit that had no listener and replayed
+   * it to whoever subscribed next. The host bus does not: an emit with no
+   * subscriber is dropped. That is the property the migration had to answer for,
+   * so it is pinned here rather than assumed.
+   *
+   * Dropping is safe for this emitter, and the reason is call order: it fires at
+   * `turn_end`, and its one consumer (`bridge/events.ts`) subscribes at
+   * `session_start`, which pi always fires first — a turn cannot end before its
+   * session started. Every other emitter in the suite is later still (a tool
+   * call, a child's socket, a child's stdout). So no ordering guard was kept, and
+   * this is precisely the case that would need one if that ever stopped holding.
+   */
+  it("an emit with no subscriber is not replayed to the next subscriber", () => {
+    const handler = registerAndGetTurnEndHandler();
+    handler(
+      {
+        type: "turn_end",
+        turnIndex: 0,
+        message: assistantMessage({ usage: { input: 5, output: 1, cost: { total: 0.5 } } }),
+      },
+      { mode: "tui" },
+    );
+
+    const { events, done } = captureCostUpdates();
+    expect(events).toHaveLength(0);
+    done();
+  });
+
+  it("the same emit DOES reach a subscriber that was already listening", () => {
+    const handler = registerAndGetTurnEndHandler();
+    const { events, done } = captureCostUpdates();
+    try {
+      handler(
+        {
+          type: "turn_end",
+          turnIndex: 0,
+          message: assistantMessage({ usage: { input: 5, output: 1, cost: { total: 0.5 } } }),
+        },
+        { mode: "tui" },
+      );
+      expect(events).toHaveLength(1);
     } finally {
       done();
     }

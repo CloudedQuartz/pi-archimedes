@@ -42,7 +42,9 @@ function activateBridge(socketPath: string): void {
   process.env.PI_ARCHIMEDES_BRIDGE_SERVER_PID = "12345";
   // registerBridge evaluates isBridgeMode at session_start — fire the handler.
   const onSpy = vi.fn();
-  registerBridge({ on: onSpy } as unknown as ExtensionAPI);
+  // The handle the relay subscribes on. Inert here: these tests are about the
+  // socket frames the dispatch sends, not about the relay.
+  registerBridge({ on: onSpy, events: { emit: () => {}, on: () => () => {} } } as unknown as ExtensionAPI);
   const calls = onSpy.mock.calls as Array<[string, (e: unknown, ctx: unknown) => void]>;
   const startCall = calls.find((c) => c[0] === "session_start");
   expect(startCall).toBeTruthy();
@@ -73,6 +75,9 @@ function makeOptions(overrides: Partial<ExecuteOptions> = {}): ExecuteOptions {
     activeModel: "active-model",
     cwd: undefined,
     signal: undefined,
+    // Inert handle: a bridge-dispatched run never touches the event bus here, but
+    // ExecuteOptions carries one because the fork path needs it.
+    events: { emit: () => {}, on: () => () => {} },
     onUpdate: undefined,
     toolCallId: "tc-1",
     ...overrides,

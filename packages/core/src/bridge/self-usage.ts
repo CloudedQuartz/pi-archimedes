@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getBus, Events } from "../bus.js";
+import { Events, emitOn } from "../events.js";
 
 /**
  * Minimal structural mirror of the pi-ai `Usage` type (core does not depend on
@@ -25,16 +25,20 @@ interface UsageLike {
  * with it, because the footer reads usage from the session entries and those
  * already carry the main agent's assistant usage; keeping the accumulator would
  * have counted the main session's money twice. So on a plain TUI this emit has
- * no in-suite subscriber left. Deleting the emitter is NOT part of that change:
- * `cost_update` is a frame the Archimedes Client may render, and retiring it is
- * the bridge-contract question Task 11 asks when it moves these channels to
- * `pi.events`.
+ * no in-suite subscriber left, and the host bus drops it (unlike the old bus,
+ * which queued it for a subscriber that never came). Deleting the emitter is a
+ * bridge-contract question, not part of the transport migration: `cost_update`
+ * is a frame the Archimedes Client may render.
+ *
+ * Ordering is safe without a queue. The forwarder subscribes at `session_start`
+ * and this fires at `turn_end`, which pi always fires later — see
+ * `self-usage.test.ts` for the executable version of that claim.
  */
 export function registerSelfUsage(pi: ExtensionAPI): void {
   pi.on("turn_end", (event) => {
     const usage = (event.message as { usage?: UsageLike } | undefined)?.usage;
     if (!usage) return;
-    getBus().emit(Events.COST_UPDATE, {
+    emitOn(pi.events, Events.COST_UPDATE, {
       source: "main",
       inputTokens: usage.input ?? 0,
       outputTokens: usage.output ?? 0,

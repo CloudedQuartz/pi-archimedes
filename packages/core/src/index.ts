@@ -1,12 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { initBus } from "./bus.js";
 import { registerBridge } from "./bridge/index.js";
 import { registerSelfUsage } from "./bridge/self-usage.js";
 
 // ── Core registration ─────────────────────────────────────────────────────
 
 export function registerCore(pi: ExtensionAPI): void {
-  initBus();
   registerBridge(pi);
 
   // Self-usage (per-turn COST_UPDATE, source "main") — top-level like the

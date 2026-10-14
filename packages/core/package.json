@@ -18,7 +18,7 @@
     ".": "./src/index.ts",
     "./bridge": "./src/bridge/index.ts",
     "./bridge/channel": "./src/bridge/channel.ts",
-    "./bus": "./src/bus.ts",
+    "./events": "./src/events.ts",
     "./chrome": "./src/chrome.ts",
     "./text": "./src/text.ts",
     "./color": "./src/color.ts",

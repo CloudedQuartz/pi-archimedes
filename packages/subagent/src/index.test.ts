@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { Events } from "@pi-archimedes/core/events";
 
 const discoverAgents = vi.hoisted(() => vi.fn());
 const executeSubagent = vi.hoisted(() => vi.fn());
@@ -47,12 +48,22 @@ function register(): FakeTool[] {
     registerTool: (def: FakeTool) => tools.push(def),
     on: () => {},
     getAllTools: () => [{ name: "read" }, { name: "bash" }],
+    // The handle the tool forwards to `executeSubagent`. Recorded so the
+    // COST_UPDATE assertions below can say "nothing was published here".
+    events: { emit: (channel: string, payload: unknown) => busEmits.push([channel, payload]), on: () => () => {} },
   };
-  // `as never` at the seam only: the fake API carries the three members the
+  // `as never` at the seam only: the fake API carries the members the
   // registration path actually touches.
   registerSubagent(pi as never);
   return tools;
 }
+
+/** Everything the tool emitted on its handle, in order. */
+const busEmits: Array<[string, unknown]> = [];
+
+beforeEach(() => {
+  busEmits.length = 0;
+});
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
   return {
@@ -455,35 +466,21 @@ describe("dispatch: cost is reported natively, not on the bus", () => {
   });
 
   it("publishes nothing on COST_UPDATE while a run reports its cost", async () => {
-    const { getBus, Events } = await import("@pi-archimedes/core/bus");
-    const seen: unknown[] = [];
-    const unsub = getBus().on(Events.COST_UPDATE, (payload) => seen.push(payload));
-    try {
-      discoverAgents.mockReturnValue([]);
-      await subagent(register()).execute("c", { task: "t" }, undefined, undefined, makeCtx());
-    } finally {
-      unsub();
-    }
-    expect(seen).toEqual([]);
+    discoverAgents.mockReturnValue([]);
+    await subagent(register()).execute("c", { task: "t" }, undefined, undefined, makeCtx());
+    expect(busEmits.filter(([channel]) => channel === Events.COST_UPDATE)).toEqual([]);
   });
 
   it("publishes nothing on COST_UPDATE for a parallel batch either", async () => {
-    const { getBus, Events } = await import("@pi-archimedes/core/bus");
     executeParallel.mockResolvedValue([okResult, okResult]);
-    const seen: unknown[] = [];
-    const unsub = getBus().on(Events.COST_UPDATE, (payload) => seen.push(payload));
-    try {
-      discoverAgents.mockReturnValue([]);
-      await subagent(register()).execute(
-        "c",
-        { tasks: [{ task: "a" }, { task: "b" }] },
-        undefined,
-        undefined,
-        makeCtx(),
-      );
-    } finally {
-      unsub();
-    }
-    expect(seen).toEqual([]);
+    discoverAgents.mockReturnValue([]);
+    await subagent(register()).execute(
+      "c",
+      { tasks: [{ task: "a" }, { task: "b" }] },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(busEmits.filter(([channel]) => channel === Events.COST_UPDATE)).toEqual([]);
   });
 });

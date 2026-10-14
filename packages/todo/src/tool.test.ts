@@ -22,7 +22,12 @@ const theme = {
   strikethrough: (text: unknown) => `[s]${text}`,
 } as unknown as Theme;
 
-const tool = createManageTodoListTool(new TodoStateManager(), () => {});
+// The tool emits on the handle it is handed; this one has no listeners, so the
+// emits are inert here (the emit contract lives in `host-bus.test.ts`).
+const tool = createManageTodoListTool(new TodoStateManager(), () => {}, {
+  emit: () => {},
+  on: () => () => {},
+});
 
 function renderLines(result: AgentToolResult<TodoDetails | undefined>, expanded: boolean): string {
   const view = tool.renderResult(result, { expanded, isPartial: false }, theme) as {

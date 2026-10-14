@@ -1,11 +1,38 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { describe, expect, it } from "vitest";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import { describe, expect, it, beforeEach } from "vitest";
+import { Events } from "@pi-archimedes/core/events";
 import { streamEvents, type StreamCallbacks } from "./stream.js";
 
 type FakeChild = ChildProcess & { stdout: PassThrough; stderr: PassThrough };
+
+/** Stands in for the host's `createEventBus()` — the emit/on/unsubscribe contract `pi.events` implements. */
+function fakeBus() {
+  const listeners = new Map<string, Array<(data: unknown) => void>>();
+  return {
+    emit(channel: string, data: unknown): void {
+      for (const handler of [...(listeners.get(channel) ?? [])]) handler(data);
+    },
+    on(channel: string, handler: (data: unknown) => void): () => void {
+      const subs = listeners.get(channel) ?? [];
+      subs.push(handler);
+      listeners.set(channel, subs);
+      return () => {
+        const current = listeners.get(channel) ?? [];
+        const idx = current.indexOf(handler);
+        if (idx !== -1) current.splice(idx, 1);
+      };
+    },
+  };
+}
+
+/** Fresh handle per test: the emitter is handed this, the assertions listen on it. */
+let bus: ReturnType<typeof fakeBus>;
+
+beforeEach(() => {
+  bus = fakeBus();
+});
 
 function fakeChild(): FakeChild {
   const child = new EventEmitter() as FakeChild;
@@ -19,10 +46,10 @@ function fakeChild(): FakeChild {
 
 async function finishWith(
   events: Array<Record<string, unknown>>,
-  callbacks: StreamCallbacks = {},
+  callbacks: Partial<StreamCallbacks> = {},
 ) {
   const child = fakeChild();
-  const result = streamEvents(child, callbacks);
+  const result = streamEvents(child, { events: bus, ...callbacks } as StreamCallbacks);
   for (const event of events) {
     child.stdout.write(`${JSON.stringify(event)}\n`);
   }
@@ -65,10 +92,10 @@ describe("streamEvents todo mirroring", () => {
   it("mirrors the child-accepted state from result.details.todos", async () => {
     const updates: Array<{ source: string; todos: unknown[] }> = [];
     const clears: Array<{ source: string }> = [];
-    const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>
+    const off = bus.on(Events.TODOS_UPDATE, (p: unknown) =>
       updates.push(p as (typeof updates)[number]),
     );
-    const offClear = getBus().on(Events.TODOS_CLEAR, (p: unknown) =>
+    const offClear = bus.on(Events.TODOS_CLEAR, (p: unknown) =>
       clears.push(p as { source: string }),
     );
 
@@ -99,15 +126,16 @@ describe("streamEvents todo mirroring", () => {
     expect(updates[0]!.todos).toEqual([
       { content: "Fix auth", status: "pending" },
     ]);
-    // Bus re-drains queued events (emitted while unsubscribed) to the next
-    // subscriber, so stale "subagent:general" clears from earlier tests may
-    // be present — assert on the per-agent source instead of the raw count.
+    // Each test owns its handle now, so `clears` can only hold this test's
+    // emit — but the assertion stays source-scoped, because that is the
+    // contract a reader needs to see: the clear names the child it belongs to.
+    expect(clears.filter((c) => c.source === "subagent:t-acc")).toHaveLength(1);
     expect(clears.filter((c) => c.source === "subagent:t-acc")).toHaveLength(1);
   });
 
   it("mirrors nothing when the tool returned a validation rejection (result.isError)", async () => {
     const updates: Array<{ source: string; todos: unknown[] }> = [];
-    const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>
+    const off = bus.on(Events.TODOS_UPDATE, (p: unknown) =>
       updates.push(p as (typeof updates)[number]),
     );
 
@@ -139,7 +167,7 @@ describe("streamEvents todo mirroring", () => {
 
   it("mirrors nothing when the harness reported an error (event.isError)", async () => {
     const updates: Array<{ source: string; todos: unknown[] }> = [];
-    const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>
+    const off = bus.on(Events.TODOS_UPDATE, (p: unknown) =>
       updates.push(p as (typeof updates)[number]),
     );
 
@@ -166,7 +194,7 @@ describe("streamEvents todo mirroring", () => {
 
   it("falls back to normalized raw args when the accepted result has no details", async () => {
     const updates: Array<{ source: string; todos: unknown[] }> = [];
-    const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>
+    const off = bus.on(Events.TODOS_UPDATE, (p: unknown) =>
       updates.push(p as (typeof updates)[number]),
     );
 
@@ -194,7 +222,7 @@ describe("streamEvents todo mirroring", () => {
 
   it("stows raw args under the alias key todo_list (result has no details)", async () => {
     const updates: Array<{ source: string; todos: unknown[] }> = [];
-    const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>
+    const off = bus.on(Events.TODOS_UPDATE, (p: unknown) =>
       updates.push(p as (typeof updates)[number]),
     );
 
@@ -230,7 +258,7 @@ describe("streamEvents todo mirroring", () => {
 
   it("does not crash or emit when the end event has no matching start", async () => {
     const updates: Array<{ source: string; todos: unknown[] }> = [];
-    const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>
+    const off = bus.on(Events.TODOS_UPDATE, (p: unknown) =>
       updates.push(p as (typeof updates)[number]),
     );
 
@@ -254,7 +282,7 @@ describe("streamEvents todo mirroring", () => {
 
   it("does not emit for non-todo tools with todoList-shaped args", async () => {
     const updates: Array<{ source: string; todos: unknown[] }> = [];
-    const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>
+    const off = bus.on(Events.TODOS_UPDATE, (p: unknown) =>
       updates.push(p as (typeof updates)[number]),
     );
 
@@ -293,10 +321,10 @@ describe("streamEvents todo mirroring", () => {
   it("uses a unique per-child source when the child provides a session id", async () => {
     const updates: Array<{ source: string; todos: unknown[] }> = [];
     const clears: Array<{ source: string }> = [];
-    const off = getBus().on(Events.TODOS_UPDATE, (p: unknown) =>
+    const off = bus.on(Events.TODOS_UPDATE, (p: unknown) =>
       updates.push(p as (typeof updates)[number]),
     );
-    const offClear = getBus().on(Events.TODOS_CLEAR, (p: unknown) =>
+    const offClear = bus.on(Events.TODOS_CLEAR, (p: unknown) =>
       clears.push(p as { source: string }),
     );
 
@@ -383,7 +411,7 @@ async function finishChild(
   stderr = "",
 ) {
   const child = fakeChild();
-  const result = streamEvents(child, { agent: "reviewer", task: "t" });
+  const result = streamEvents(child, { agent: "reviewer", task: "t", events: bus });
   if (stderr) child.stderr.write(stderr);
   for (const event of events) {
     child.stdout.write(`${JSON.stringify(event)}\n`);

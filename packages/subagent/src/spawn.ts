@@ -4,7 +4,8 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { getBus, Events } from "@pi-archimedes/core/bus";
+import type { EventBus } from "@earendil-works/pi-coding-agent";
+import { Events, emitOn } from "@pi-archimedes/core/events";
 import { resolveThinkingLevel } from "./thinking-validation.js";
 import type { AgentConfig } from "./agents.js";
 
@@ -15,6 +16,8 @@ export interface SpawnOptions {
   cwd: string | undefined;
   signal: AbortSignal | undefined;
   agent: AgentConfig | undefined;
+  /** The parent's host handle (`pi.events`) — see `startAskSocketServer`. */
+  events: EventBus;
 }
 
 /**
@@ -74,25 +77,32 @@ function resolvePiBinary(): string {
 }
 
 /**
- * Start a Unix socket server that bridges the child's ask tool to the parent bus.
+ * Start a Unix socket server that bridges the child's ask tool to the parent's
+ * event handle.
  *
  * The child's ask tool (in packages/ask) connects to PI_SUBAGENT_SOCKET and sends:
  *   { type: "ask_request", requestId, questions, toolCallId } as a JSON line
  * and waits for:
  *   { type: "ask_response", requestId, cancelled, results } as a JSON line
  *
- * We forward the request onto the bus (ASK_REQUEST, carrying toolCallId), the
+ * We forward the request onto the handle (ASK_REQUEST, carrying toolCallId), the
  * ask package (or the bridge, in bridge mode) answers it, then emits
- * ASK_RESPONSE on the bus, and we write it back to the socket connection.
+ * ASK_RESPONSE on the same handle, and we write it back to the socket connection.
  *
  * When the socket closes (child exit, or the child's own 5-min timeout →
  * socket.end()) we signal the bridge via ASK_CANCEL for any still-pending ask.
  * We do NOT emit ASK_RESPONSE ourselves — the bridge is the sole emitter
  * (no double-decrement of its refcount).
  *
+ * @param events the parent's `pi.events`, injected: this is a plain function, not
+ *               an extension, so the handle has to come from the caller that has
+ *               one. The subscription it opens is closed by the returned
+ *               `cleanup()` — a per-spawn subscription with a per-spawn
+ *               teardown, which is why it cannot accumulate across runs.
+ *
  * Returns the socket path and a cleanup function.
  */
-export function startAskSocketServer(agentName: string): { socketPath: string; cleanup: () => void } {
+export function startAskSocketServer(agentName: string, events: EventBus): { socketPath: string; cleanup: () => void } {
   // Use named pipes on Windows, Unix domain sockets elsewhere.
   // Linux socket path limit is 108 chars — keep it short.
   const id = randomUUID().slice(0, 8);
@@ -104,8 +114,8 @@ export function startAskSocketServer(agentName: string): { socketPath: string; c
   // Map of pending ask requests: requestId → write-back callback
   const pending = new Map<string, (response: unknown) => void>();
 
-  // Listen for ASK_RESPONSE from the bus and route back to the waiting socket conn
-  const unsubResponse = getBus().on(Events.ASK_RESPONSE, (payload: unknown) => {
+  // Listen for ASK_RESPONSE on the handle and route back to the waiting socket conn
+  const unsubResponse = events.on(Events.ASK_RESPONSE, (payload: unknown) => {
     const data = payload as {
       requestId: string;
       cancelled: boolean;
@@ -153,9 +163,9 @@ export function startAskSocketServer(agentName: string): { socketPath: string; c
               }
             });
             socketRequestIds.add(msg.requestId);
-            // Forward to bus — the ask package (or the bridge, in bridge mode)
+            // Forward onto the handle — the ask package (or the bridge, in bridge mode)
             // answers it; toolCallId rides along for Client correlation
-            getBus().emit(Events.ASK_REQUEST, {
+            emitOn(events, Events.ASK_REQUEST, {
               source: `subagent:${agentName}`,
               requestId: msg.requestId,
               questions: msg.questions,
@@ -175,7 +185,7 @@ export function startAskSocketServer(agentName: string): { socketPath: string; c
     socket.on("close", () => {
       for (const rid of socketRequestIds) {
         if (pending.has(rid)) {
-          getBus().emit(Events.ASK_CANCEL, { requestId: rid, source: `subagent:${agentName}` });
+          emitOn(events, Events.ASK_CANCEL, { requestId: rid, source: `subagent:${agentName}` });
           pending.delete(rid);
         }
       }
@@ -209,7 +219,7 @@ export function spawnSubagent(options: SpawnOptions): ChildProcess {
   const agentName = options.agent?.name ?? "general";
 
   // Start ask bridge socket before spawning so the env var is ready
-  const { socketPath, cleanup: cleanupSocket } = startAskSocketServer(agentName);
+  const { socketPath, cleanup: cleanupSocket } = startAskSocketServer(agentName, options.events);
 
   // Build CLI args
   const args: string[] = ["--mode", "json", "--no-session", "-p"];
