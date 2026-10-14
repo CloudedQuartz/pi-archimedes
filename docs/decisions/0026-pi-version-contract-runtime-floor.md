@@ -29,3 +29,30 @@ Given that, we picked asymmetric floors over pi's documented `"*"` convention (`
 - `@types/node` stays held at **22.19.19**. pi 1.2.0 bundles 26.6.5, where `ChildProcess extends InternalEventEmitter<ChildProcessEventMap>`; resolving both copies into one program yields three false `Property 'on' does not exist` errors in `packages/image-paste/src/clipboard.ts` and `packages/sudo/src/tool.ts` that look exactly like real breakage. This pin will read as stale to a future contributor and must not be "cleaned up" without re-running the type check.
 - `pnpm-lock.yaml` must be regenerated in the same commit as the range change, or both `--frozen-lockfile` jobs fail with `ERR_PNPM_OUTDATED_LOCKFILE`.
 - Peer ranges still buy no protection at install time. If pi begins validating them, every `>=0.1.0` in this monorepo becomes a live false claim and this decision should be revisited.
+
+## Amendment (2026-10-14): every floor re-verified against the published declarations
+
+The set this decision recorded was chosen before three things merged: **#110** (tools declaring `outputSchema` and returning `structuredContent`, plus `annotations` and `exposure`, and `ask`'s note drawing its caret with pi-tui's `renderFakeCursor`), **#111** (`meta`'s settings overlay rebuilt on pi-tui's `SettingsList`), and the `pi.events` transport work ADR 0029 records. Each moved the oldest host its package can actually run on, so the 2026-10-13 set had become a set of claims the code no longer honoured — in the permissive direction, which is the dangerous one.
+
+**Verified, not reasoned from version numbers.** Every non-test import and `pi.*` / `ctx.ui.*` call site was listed per package and checked against the `.d.ts` files of the actual npm tarballs of `@earendil-works/pi-coding-agent`, `pi-tui` and `pi-ai` at 0.84.4, 0.85.0, 0.86.0, 0.87.0, 0.99.0, 1.0.0, 1.0.1, 1.0.2, 1.0.3, 1.1.0 and 1.2.0. Two rules came out of that:
+
+1. **One floor per package, across all its pi peers.** The family is published in lockstep, so no install has `pi-coding-agent@1.1.0` with `pi-tui@1.2.0`; splitting the numbers per package would describe a host that cannot exist. A package's floor is the oldest published train whose declarations provide every host symbol its shipped code touches.
+2. **A guarded or optional symbol does not raise a floor.** `NativeClipboard.getFilePaths?()` (0.99.0) is behind optional chaining, so `image-paste` stays at `>=0.86.0`; `pi.getSettings()` (0.99.0) sits behind `core/src/settings-io.ts`'s file-read fallback, so `core` stays at `>=0.85.0`; `foregroundAnsi` (0.99.0) is read off a namespace import and cast to possibly-undefined (`core/src/chrome.ts`), so an old host loses the tint, not the palette. Those fallbacks are the reason the floors can stay low — as before, they are load-bearing.
+
+| package | floor | what sets it (verified in that train's own declarations) |
+| --- | --- | --- |
+| `core` | `>=0.85.0` | unchanged. `pi.events` present at 0.84.4 (`types.d.ts:1077`); `pi.getSettings` only from 0.99.0, reached through the fallback above |
+| `ui` | `>=1.2.0` | unchanged: `pi.registerToolRenderer()` (1.0.1) and `ToolRenderContext.durationMs`/`outputPad` (1.1.0); also its own `reportPiSupport("ui", "1.2.0")` |
+| `diff` | `>=1.2.0` | unchanged for the same two symbols; `pi-tui` raised from `>=0.1.0` to match |
+| `subagent` | `>=1.2.0` | unchanged: `agent_settled.aborted` is 1.1.0 (absent in 1.0.3), print-mode exit code is 1.2.0; `pi-tui` raised to match |
+| `meta` | `>=1.2.0` | was `>=0.1.0`. `SettingsList` is old (0.84.4), but `meta` registers `ui`, `diff` and `subagent`, all of which self-report 1.2.0 — a suite whose own components say "below 1.2.0 I am degraded" does not support 0.84 |
+| `ask` | `>=1.2.0` | was `>=0.85.0`. `renderFakeCursor` exists in **no** pi-tui before 1.2.0 and `note.ts` imports it by name, so on 1.1.0 the note's caret is a link error, not a degradation |
+| `todo` | `>=0.99.0` | was `>=0.85.0`. `outputSchema` is 0.99.0 (`types.d.ts:457`); 0.87.0's declarations have no such field, so the structured payload it promises silently does not exist below it |
+| `sudo` | `>=0.99.0` | was `>=0.1.0`. `annotations` (`destructiveHint`) is 0.99.0 (`types.d.ts:465`) |
+| `web` | `>=0.99.0` | was `>=0.1.0`. `outputSchema` on three tools, `openWorldHint`, and a `pi.getSettings()` call (0.99.0, `types.d.ts:1236`) |
+| `footer` | `>=0.84.4` | was `>=0.1.0`. It touches no `pi.events`, no renderer API and no `SettingsList`; everything it calls (`pi.getThinkingLevel`, `ctx.getContextUsage`, `setFooter`/`setStatus`) is present at 0.84.4, so the honest change is a real number rather than a placeholder |
+| `notify` | `>=0.84.4` | unchanged for `pi-coding-agent` (ADR 0013); its `pi-tui` peer moves from `>=0.1.0` to the same number for the train rule |
+| `image-paste` | `>=0.86.0` | unchanged, and now positively justified: `getNativeClipboard()` — the package's only clipboard primitive — first appears in pi-tui 0.86.0 and is absent from 0.85.0 |
+| `session-name` | `>=0.86.0` | unchanged: everything it uses is present at 0.84.4, so the declared floor is conservative-but-published, which is the acceptable direction |
+
+**`>=0.1.0` is gone from the manifests entirely.** Not only is it unevaluated at install time (this decision's opening fact); `0.1.0` **was never published** for `pi-coding-agent`, `pi-tui` or `pi-ai` — the oldest release of each on npm is `0.74.0` — so it never described a host, not even vacuously "from the beginning". ADR 0013's exemption ("packages whose new code only needs *types* from pi stay `>=0.1.0`") is not overruled, it simply has no members any more: every package in the suite calls host values at runtime. If a genuinely types-only package is added, the exemption is available again and this table should not be read as banning it.
