@@ -60,9 +60,12 @@ Then run `/reload` in your session (or start a new one) to pick it up — that r
 
    ```json
    {
+     "$schema": "https://pi.dev/schemas/keybindings.schema.json",
      "app.clipboard.pasteImage": []
    }
    ```
+
+   The `$schema` line is optional (Pi skips that key when loading the file) — it exists so an editor or a standalone validator can check the file against Pi's published schema, and it's what the first-run offer below writes.
 
    If it already exists, just add/set `"app.clipboard.pasteImage": []` in there and run `/reload`. Or skip the step entirely if the file doesn't exist yet: on the first TUI session the suite offers to create it automatically with the snippet above — accepting creates the file and attempts an automatic reload where the runtime supports it (on current Pi 0.85.1 you're notified to run `/reload`, and the cleared binding applies once it runs); declining or cancelling (Esc) never asks again.
 

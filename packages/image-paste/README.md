@@ -41,8 +41,10 @@ New to Pi? Pi itself is a one-time global install and needs Node.js ≥ 22.19.0.
 > **Pi's built-in `app.clipboard.pasteImage` owns the table's first shortcut on every platform** — `Ctrl+V` on Linux/macOS, `Alt+V` on Windows — so the two conflict everywhere. When both fire on the shared key, the built-in throws warning banners (seen on Linux). Clear the built-in binding in `~/.pi/agent/keybindings.json` so the preview-enhanced handler takes the paste:
 >
 > ```json
-> { "app.clipboard.pasteImage": [] }
+> { "$schema": "https://pi.dev/schemas/keybindings.schema.json", "app.clipboard.pasteImage": [] }
 > ```
+>
+> The `$schema` line is optional — Pi skips that key when it loads the file — but it lets an editor validate the file against Pi's published keybindings schema, and it is exactly what the first-run offer below writes.
 >
 > **First-run offer (once ever, all platforms)** — when installed via the suite, on the first TUI session with image-paste enabled, if `~/.pi/agent/keybindings.json` doesn't exist yet, the suite offers to create it with exactly the snippet above: accepting creates the file and attempts an automatic reload where the runtime supports it (on current Pi 0.85.1 you're notified to run `/reload`, and the cleared binding applies once it runs), declining or cancelling (Esc) never asks again — re-open by deleting `archimedes.imagePaste.keybindingsPromptDone` from `~/.pi/agent/settings.json`.
 

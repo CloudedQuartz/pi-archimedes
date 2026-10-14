@@ -49,7 +49,8 @@ const { offerKeybindingFix, CREATED_NOTIFY, CREATED_RELOAD_HINT } = await import
 
 const NAMESPACE = "archimedes.imagePaste";
 /** The exact snippet from packages/image-paste/README.md → "Paste shortcuts". */
-const SNIPPET = '{ "app.clipboard.pasteImage": [] }';
+const SNIPPET =
+  '{ "$schema": "https://pi.dev/schemas/keybindings.schema.json", "app.clipboard.pasteImage": [] }';
 /** What a concurrent process writes into keybindings.json at rename time. */
 const CONCURRENT_CONTENT = '{ "app.clipboard.pasteImage": ["ctrl+v"] }';
 
@@ -535,5 +536,37 @@ describe("concurrent creation is never clobbered", () => {
         (c) => c[0] === CREATED_NOTIFY || c[0] === CREATED_RELOAD_HINT,
       ),
     ).toBe(false);
+  });
+});
+
+// ── the $schema line in the generated artefact ───────────────────────────
+//
+// What the file is FOR, not just that it was written. `$schema` points at pi's
+// published schema (https://pi.dev/schemas/keybindings.schema.json, which
+// declares `"$schema": { "type": "string" }` and an `$id` of the same URL), so
+// an editor or a standalone validator can check the file. It is
+// forward-compatibility and tooling, NOT startup validation: pi 1.2.0 validates
+// *themes* at startup (`setThemeJsonValidator`, dist/main.js:452) and ships
+// `KeybindingsSchema` (dist/core/keybindings-schema.js:13) with nothing
+// importing it. pi's own loader skips `$schema` outright
+// (`if (key === "$schema") continue;`, dist/core/keybindings.js:247-248), which
+// is what makes the extra key safe to write: the unbinding still applies.
+
+describe("generated snippet carries pi's published $schema", () => {
+  it("the written file parses to $schema plus the unbinding, and nothing else", async () => {
+    writeSettings({ [NAMESPACE]: { enabled: true } });
+    const { ctx, confirm } = makeCtx("tui");
+    confirm.mockResolvedValue(true);
+
+    await offerKeybindingFix(ctx);
+
+    const raw = fs.readFileSync(keybindingsPath(), "utf-8");
+    expect(JSON.parse(raw)).toEqual({
+      $schema: "https://pi.dev/schemas/keybindings.schema.json",
+      "app.clipboard.pasteImage": [],
+    });
+    // Byte-exact, because the README quotes this line verbatim and a reader
+    // copy-pasting it should get exactly what the suite writes.
+    expect(raw).toBe(SNIPPET);
   });
 });
