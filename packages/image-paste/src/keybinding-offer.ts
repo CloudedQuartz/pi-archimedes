@@ -301,7 +301,12 @@ export type RestoreNativePasteStatus =
   | { kind: "restored"; path: string; reloadRequired: boolean }
   /** Left byte-for-byte alone; `manualEdit` is the one-line fix. */
   | { kind: "untouched"; path: string; reason: UntouchedReason; manualEdit: string }
-  /** The rewrite itself failed (permissions, ELOOP…); the file is intact. */
+  /**
+   * The rewrite itself failed (EACCES, EISDIR, ENOSPC…); the file is intact.
+   * A symlink LOOP is NOT in this case: `existsSync` follows links, so a loop —
+   * like a dangling link — reads as `"missing"` and the write is never
+   * attempted. Verified by test.
+   */
   | { kind: "failed"; path: string; error: string; manualEdit: string };
 
 /**
@@ -401,7 +406,9 @@ function isSuiteOwnedUnbinding(obj: Record<string, unknown>): boolean {
  * * Writes atomically through {@link writeAtomicPreservingSymlinks}, so a
  *   `keybindings.json` that is a symlink to somewhere else stays a symlink
  *   (the offer's own tmp+rename-onto-path is deliberately NOT reused — it only
- *   ever *creates* a missing file, where link preservation cannot matter).
+ *   ever *creates* a missing file, where link preservation cannot matter). A
+ *   DANGLING link never reaches that helper either: `existsSync` follows the
+ *   link, so the status is `"missing"` and nothing is written through it.
  * * Never throws: a failed write comes back as `"failed"`.
  */
 export function restoreNativePaste(): RestoreNativePasteStatus {
