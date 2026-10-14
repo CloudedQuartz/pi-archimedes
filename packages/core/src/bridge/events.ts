@@ -173,6 +173,11 @@ export function stop(): void {
   // Retire in-flight replies BEFORE anything else: their callbacks run on the
   // next microtask, which is after a same-tick `start()` has re-subscribed, so
   // they need to be told they are stale rather than left to find the new set.
+  // Nothing waits on the dropped reply: this teardown runs from
+  // `session_shutdown`, and the replacement that fired it already aborted the
+  // turn (`AgentSessionRuntime.teardownCurrent` → `session.abort()`), whose
+  // AbortSignal is what kills the child that asked (`subagent/spawn.ts`'s abort
+  // handler). The ask's requester is gone with the session.
   generation++;
   for (const unsubscribe of unsubscribers.splice(0)) unsubscribe();
   subscribedOn = undefined;
