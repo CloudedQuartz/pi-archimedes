@@ -993,6 +993,56 @@ describe("runNativePasteRestore — the caller surfaces the outcome (once per pr
     expect((tui.notify.mock.calls[0] as [string, string])[1]).toBe("warning");
   });
 
+  // The silence promise is stated for EVERY outcome, not just "untouched":
+  // "No notify at all when ctx.hasUI is false". The `restored` branch goes
+  // through the shared reload helper, which notified unconditionally. Measured
+  // against pi 1.2.0: `hasUI` is `uiContext !== noOpUIContext`
+  // (dist/core/extensions/runner.js:404), so print/json hosts hand out a
+  // no-op `notify` and rpc reports `hasUI: true` — meaning the guard is what
+  // makes the documented promise TRUE rather than accidentally true via a
+  // host-side no-op, and it is the same rule the `untouched` branch already
+  // applies.
+  it("a headless session that RESTORES the file never notifies, and the log still carries the outcome", async () => {
+    askForNativePaste();
+    writeKeybindings(ARTEFACT_POST_123);
+    const logFile = join(tempDir, `diag-${process.pid}-headless-restored.log`);
+    const headless = makeCtx("rpc", { hasUI: false, withReload: true });
+    process.env.PI_ARCHIMEDES_LOG = logFile;
+    let outcome: NativePasteRestoreOutcome | undefined;
+    try {
+      outcome = await runNativePasteRestore(headless.ctx);
+    } finally {
+      delete process.env.PI_ARCHIMEDES_LOG;
+    }
+
+    // The work still happens — silence is not inaction.
+    expect(outcome!.kind).toBe("restored");
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe("{}");
+    // …with the headless ctx (which has a reload) reporting no /reload is needed.
+    if (outcome!.kind !== "restored") return expect.fail(`expected restored, got ${outcome!.kind}`);
+    expect(outcome!.reloadRequired).toBe(false);
+    // …and NOT one notify emitted, and the once-per-process warning budget is
+    // still unspent for whatever comes next.
+    expect(headless.notify).not.toHaveBeenCalled();
+    expect((globalThis as Record<symbol, unknown>)[NOTICE_KEY]).toBeUndefined();
+    // …while the detailed channel still records it.
+    expect(fs.existsSync(logFile)).toBe(true);
+    expect(fs.readFileSync(logFile, "utf-8")).toContain(keybindingsPath());
+  });
+
+  it("a headless session with no reload on the ctx notifies nothing, and says /reload is required", async () => {
+    askForNativePaste();
+    writeKeybindings(ARTEFACT_PRE_123);
+    const headless = makeCtx("print", { hasUI: false });
+
+    const outcome = await runNativePasteRestore(headless.ctx);
+
+    if (outcome.kind !== "restored") return expect.fail(`expected restored, got ${outcome.kind}`);
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe("{}");
+    expect(outcome.reloadRequired).toBe(true);
+    expect(headless.notify).not.toHaveBeenCalled();
+  });
+
   it("a second session on the already-restored {} file notifies nothing and writes nothing", async () => {
     askForNativePaste();
     writeKeybindings("{}");

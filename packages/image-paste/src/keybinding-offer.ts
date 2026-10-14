@@ -93,21 +93,28 @@ function messageOf(error: unknown): string {
  * extension instance. A rejected reload is swallowed: the TUI shows its own
  * "Reload failed" status and the session continues on the still-valid ctx.
  *
+ * `opts.notify` (default `true`) suppresses BOTH messages, for a caller running
+ * on a UI-less ctx: the texts are UI messages and `runNativePasteRestore`'
+ * contract is to stay silent when `ctx.hasUI` is false. The reload itself is
+ * unaffected — a host that exposes `reload` still gets the file re-read.
+ *
  * @returns `true` iff a reload was available and completed.
  */
 async function reloadAfterKeybindingChange(
   ctx: ExtensionContext,
   notifyText: string,
   hintText: string,
+  opts?: { notify?: boolean },
 ): Promise<boolean> {
+  const shouldNotify = opts?.notify ?? true;
   // Cast: reload() is typed on ExtensionCommandContext; the session_start
   // handler receives the base ExtensionContext, hence the presence guard.
   const reload = (ctx as ExtensionCommandContext).reload;
   if (typeof reload !== "function") {
-    ctx.ui.notify(hintText, "info");
+    if (shouldNotify) ctx.ui.notify(hintText, "info");
     return false;
   }
-  ctx.ui.notify(notifyText, "info");
+  if (shouldNotify) ctx.ui.notify(notifyText, "info");
   try {
     await reload();
     return true;
@@ -479,7 +486,9 @@ function describeRestoreStatus(status: RestoreNativePasteStatus): string {
  * every outcome and both may fire, but `diag` cannot be the only channel: it is
  * a no-op unless `PI_ARCHIMEDES_LOG` names a file, so a default install would be
  * silent while pi's paste stayed dead. No notify at all when `ctx.hasUI` is
- * false, and a headless run does not spend the guard. Nothing here uses
+ * false — on ANY outcome, including a successful restore, whose info and
+ * `/reload`-hint texts are UI messages too — and a headless run does not spend
+ * the guard. Nothing here uses
  * `console.*` (`docs/features/ui.md`, guarded by
  * `packages/core/src/log-discipline.test.ts`).
  *
@@ -523,10 +532,14 @@ export async function runNativePasteRestore(
 
   if (status.kind === "restored") {
     // Last use of ctx: reload() invalidates this extension instance.
+    // `notify: ctx.hasUI` keeps the silence promise for a UI-less ctx: the
+    // restore still runs and `diag` still records it, but no UI message is
+    // pushed at a host that said it has no UI.
     const reloaded = await reloadAfterKeybindingChange(
       ctx,
       RESTORED_NOTIFY,
       RESTORED_RELOAD_HINT,
+      { notify: ctx.hasUI },
     );
     return { ...status, reloadRequired: !reloaded };
   }
