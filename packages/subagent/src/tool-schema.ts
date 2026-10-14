@@ -46,8 +46,12 @@ export const SUBAGENT_PARAMS_SCHEMA = Type.Object({
 // against nothing, so `index.output-schema.test.ts` runs the handler and checks
 // the payload against this declaration.
 //
-// Failed runs report `isError` and carry none of it — see the note in
-// `index.ts` — so a script keeps rejecting with the text it rejects with today.
+// A single run that reports itself as failed is `isError` and carries none of it
+// (see the note in `index.ts`), so a script keeps rejecting with the text it
+// rejects with today. A parallel batch is the other case: one failed run inside
+// a batch does not make the batch an error — it stays a report of N runs, with
+// that run's `error` field set inside `results` (pre-existing shape, unchanged
+// by these schemas; see the per-run failure markers in `formatParallelResults`).
 
 const UsageSchema = Type.Object({
   input: Type.Number(),
