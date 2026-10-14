@@ -5,9 +5,9 @@
 // chrome for a minimal per-plugin list: each row has `values: ["On", "Off"]`
 // cycled with ←/→, and every change persists immediately to the
 // package's own archimedes.* namespace (its `enabled` key). There are
-// deliberately NO prompt descriptors — Enter /
-// Space stay inert in list mode so the rows toggle instead of opening a
-// text prompt.
+// deliberately NO prompt descriptors, so no row carries a `submenu`: Enter and
+// Space fall through to `SettingsList`'s own cycling and toggle the row, rather
+// than opening a text field.
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SettingItem } from "@earendil-works/pi-tui";

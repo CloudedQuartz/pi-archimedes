@@ -11,8 +11,12 @@
  * pi's `getSettingsListTheme()` (`pi-coding-agent`
  * `dist/modes/interactive/theme/theme.js:896`) re-anchored on the `Theme`
  * instance pi hands the overlay factory: accent for the selected label and the
- * cursor, accent/muted for the value, dim for description and hint. No escape
- * sequence is composed here (ADR 0029).
+ * cursor, accent/muted for the value, dim for description and hint. Every
+ * coloured string asks `theme.fg` for its token — nothing here composes a
+ * colour escape (the pi 1.x alignment rule: ask the theme for the token you
+ * need, in the slot you need it). The only `\x1b` literals in this file are
+ * bracketed-paste framing: `\x1b[200~`/`\x1b[201~` to seed the free-input field
+ * and to refuse a paste into a number field.
  *
  * Two pieces stay ours because pi's component does not offer them:
  *
@@ -41,6 +45,24 @@
  * not notice rows added to or removed from the caller's array while it is open,
  * and `onChange` — not the array — is how a new value reaches the caller.
  * Neither call site touches its array after opening.
+ *
+ * What the swap changes on purpose, against the hand-rolled list it replaces:
+ *
+ * - Enter and Space now reach `SettingsList`, so they cycle a row's value and
+ *   open a prompt row's field. They did nothing before.
+ * - `ctrl+c` sits on `tui.select.cancel`, so it closes the panel from the list
+ *   and drops an open field back to the list. It was swallowed before.
+ * - The free-input field is pi-tui's `Input`, so the caret is live (←/→,
+ *   ctrl+a/e, ctrl+b/f) and word-kill, yank, paste and undo work with it. What
+ *   the field did before still does: a seeded value is appended to, Backspace
+ *   removes one grapheme, esc discards, digits-only in a number field, and no
+ *   paste into a number field.
+ * - Selection movement goes through `tui.select.up` / `down`, so a binding in
+ *   `keybindings.json` reaches this panel — it never did before — while value
+ *   stepping stays on the arrow keys themselves.
+ * - Ten rows are on screen instead of twenty, with pi's own `(n/total)` counter
+ *   under them whenever some are off-screen, and pi's own hint line above the
+ *   panel's key row.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
