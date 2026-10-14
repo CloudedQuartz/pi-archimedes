@@ -6,6 +6,7 @@ import { executeSubagent, executeParallel } from "./execute.js";
 import { formatParallelResults, formatSingleResult } from "./format.js";
 // agent-manager.js lazy-loaded below to keep subagent tool registration fast
 import { renderSubagentResult } from "./render.js";
+import { RowBlock } from "./row-block.js";
 import { OVERLAY_CHROME } from "@pi-archimedes/core/overlay";
 import { renderToolHeader } from "@pi-archimedes/core/tool-render";
 import { reportPiSupport } from "@pi-archimedes/core/pi-support";
@@ -291,18 +292,21 @@ export function registerSubagent(pi: ExtensionAPI): void {
         false) as boolean;
 
       const renderTheme = theme as unknown as RenderTheme;
-      const text = new Text("", 0, 0);
+      // A RowBlock, not a plain Text: the subagent rows are cut at the width pi
+      // renders them at, and only the component is ever handed that width.
+      const lastComponent = (context as { lastComponent?: unknown })?.lastComponent;
+      const rows = lastComponent instanceof RowBlock ? lastComponent : new RowBlock();
       const renderContext = {
         expanded,
         isError: toolResult.isError ?? false,
-        lastComponent: (context as { lastComponent?: Text })?.lastComponent,
+        lastComponent: rows,
         state: (context as Record<string, unknown>)?.state ?? {},
         invalidate: () => {},
       };
-      (context as Record<string, unknown>).lastComponent = text;
+      (context as Record<string, unknown>).lastComponent = rows;
 
       try {
-        const rendered = renderSubagentResult(text, toolResult, { expanded }, renderTheme, renderContext as any);
+        const rendered = renderSubagentResult(rows, toolResult, { expanded }, renderTheme, renderContext as any);
         return rendered;
       } catch (e) {
         debugText.setText("render error: " + (e instanceof Error ? e.message : String(e)));

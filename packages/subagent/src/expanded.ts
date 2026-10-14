@@ -1,9 +1,15 @@
-import { Text } from "@earendil-works/pi-tui";
 import type { RunOutcome, SubagentDetails, SubagentProgress, SubagentResult, SubagentToolCall } from "./types.js";
-import { formatDuration, truncLine, buildStatsLine, buildAgentLabel, buildOutcomeLine } from "./format.js";
+import { formatDuration, buildStatsLine, buildAgentLabel, buildOutcomeLine } from "./format.js";
+import { block, row, type RowBlock, type RowSegment } from "./row-block.js";
 import { renderToolCallLine } from "@pi-archimedes/core/tool-render";
 
 type Theme = { fg: (token: string, text: string) => string; bold: (text: string) => string };
+
+// The expanded view mixes two kinds of line and says which is which (see
+// `row-block.ts`): a **row** (label, stats, activity, outcome) stays one line and
+// fills the frame; a **block** (the task text, the tool-call history, the output)
+// keeps wrapping, because the expanded view is where all of it is meant to be
+// readable (ADR 0020).
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -39,11 +45,11 @@ export function buildExpandedText(
   result: SubagentResult,
   progress: SubagentProgress | undefined,
   theme: Theme,
-): string {
-  const lines: string[] = [];
+): RowSegment[] {
+  const lines: RowSegment[] = [];
 
-  lines.push(buildAgentLabel(result.agent, result.task, theme));
-  lines.push("");
+  lines.push(row(buildAgentLabel(result.agent, result.task, theme)));
+  lines.push(row(""));
 
   // Stats line (same as compact view)
   const modelName = progress?.model ?? result.model;
@@ -57,68 +63,68 @@ export function buildExpandedText(
   }, theme);
   const statsParts = [modelLabel, statsLine].filter(Boolean);
   if (statsParts.length > 0) {
-    lines.push(statsParts.join(" "));
+    lines.push(row(statsParts.join(" ")));
   }
 
   // Task
   if (result.task) {
-    lines.push("");
-    lines.push(theme.fg("dim", "Task: " + result.task));
+    lines.push(row(""));
+    lines.push(block(theme.fg("dim", "Task: " + result.task)));
   }
 
   // Tool calls history
   const toolCalls = progress?.toolCalls;
   if (toolCalls && toolCalls.length > 0) {
-    lines.push("");
+    lines.push(row(""));
     for (const call of toolCalls) {
-      lines.push(formatToolCall(call, theme));
+      lines.push(block(formatToolCall(call, theme)));
     }
   }
 
   // Output - show live streaming output or final output
   const outputText = progress?.output ?? result.finalOutput;
   if (outputText) {
-    lines.push("");
-    lines.push(outputText);
+    lines.push(row(""));
+    lines.push(block(outputText));
   }
 
   // Error / outcome at the bottom
   if (result.error || result.outcome || result.exitCode === 0) {
-    lines.push("");
+    lines.push(row(""));
     if (result.outcome || result.error) {
-      lines.push(outcomeRow({ outcome: result.outcome, error: result.error }, theme, { failed: "Failed" }));
+      lines.push(row(outcomeRow({ outcome: result.outcome, error: result.error }, theme, { failed: "Failed" })));
     } else {
-      lines.push(theme.fg("success", "✓ Done"));
+      lines.push(row(theme.fg("success", "✓ Done")));
     }
   } else {
-    lines.push("");
-    lines.push(theme.fg("error", "✗ Failed"));
+    lines.push(row(""));
+    lines.push(row(theme.fg("error", "✗ Failed")));
   }
 
-  return lines.join("\n");
+  return lines;
 }
 
 export function renderExpanded(
-  text: Text,
+  rows: RowBlock,
   result: SubagentResult,
   progress: SubagentProgress | undefined,
   theme: Theme,
-): Text {
-  text.setText(buildExpandedText(result, progress, theme));
-  return text;
+): RowBlock {
+  rows.setSegments(buildExpandedText(result, progress, theme));
+  return rows;
 }
 
 // ── Expanded streaming progress ─────────────────────────────────────────────
 
 export function renderProgressExpanded(
-  text: Text,
+  rows: RowBlock,
   progress: SubagentProgress,
   theme: Theme,
-): Text {
-  const lines: string[] = [];
+): RowBlock {
+  const lines: RowSegment[] = [];
 
-  lines.push(buildAgentLabel(progress.agent, progress.task, theme));
-  lines.push("");
+  lines.push(row(buildAgentLabel(progress.agent, progress.task, theme)));
+  lines.push(row(""));
 
   // Stats line (same as compact view)
   const modelLabel = progress.model ? theme.fg("accent", progress.model) : "";
@@ -131,48 +137,46 @@ export function renderProgressExpanded(
   }, theme);
   const statsParts = [modelLabel, statsLine].filter(Boolean);
   if (statsParts.length > 0) {
-    lines.push(statsParts.join(" "));
+    lines.push(row(statsParts.join(" ")));
   }
 
   // Task
   if (progress.task) {
-    lines.push("");
-    lines.push(theme.fg("dim", "Task: " + progress.task));
+    lines.push(row(""));
+    lines.push(block(theme.fg("dim", "Task: " + progress.task)));
   }
 
   // Tool calls history
   if (progress.toolCalls && progress.toolCalls.length > 0) {
-    lines.push("");
+    lines.push(row(""));
     for (const call of progress.toolCalls) {
-      lines.push(formatToolCall(call, theme));
+      lines.push(block(formatToolCall(call, theme)));
     }
   }
 
   // Activity (current tool, marked with the running glyph ▸)
   if (progress.currentTool) {
-    lines.push("");
-    const argsPreview = progress.currentToolArgs
-      ? truncLine(progress.currentToolArgs, 60)
-      : "";
+    lines.push(row(""));
+    const argsPreview = progress.currentToolArgs ?? "";
     const durationPart = progress.currentToolStartedAt
       ? " | " + formatDuration(Date.now() - progress.currentToolStartedAt)
       : "";
     const suffix = (argsPreview ? ": " + argsPreview : "") + durationPart;
-    lines.push(renderToolCallLine("running", progress.currentTool, suffix, theme));
+    lines.push(row(renderToolCallLine("running", progress.currentTool, suffix, theme)));
   }
 
   // Status at bottom
   if (progress.status === "completed" || progress.outcome) {
-    lines.push("");
-    const row = buildOutcomeLine({ outcome: progress.outcome, error: progress.error }, theme);
-    lines.push(row ?? theme.fg("success", "✓ Done"));
+    lines.push(row(""));
+    const outcomeLine = buildOutcomeLine({ outcome: progress.outcome, error: progress.error }, theme);
+    lines.push(row(outcomeLine ?? theme.fg("success", "✓ Done")));
   } else if (progress.status === "failed") {
-    lines.push("");
-    lines.push(outcomeRow({ outcome: undefined, error: progress.error }, theme, { failed: "Failed" }));
+    lines.push(row(""));
+    lines.push(row(outcomeRow({ outcome: undefined, error: progress.error }, theme, { failed: "Failed" })));
   }
 
-  text.setText(lines.join("\n"));
-  return text;
+  rows.setSegments(lines);
+  return rows;
 }
 
 // ── Expanded parallel streaming progress ────────────────────────────────────
@@ -180,11 +184,11 @@ export function renderProgressExpanded(
 export function buildProgressExpandedText(
   progress: SubagentProgress,
   theme: Theme,
-): string {
-  const lines: string[] = [];
+): RowSegment[] {
+  const lines: RowSegment[] = [];
 
-  lines.push(buildAgentLabel(progress.agent, progress.task, theme));
-  lines.push("");
+  lines.push(row(buildAgentLabel(progress.agent, progress.task, theme)));
+  lines.push(row(""));
 
   // Stats line (same as compact view)
   const modelLabel = progress.model ? theme.fg("accent", progress.model) : "";
@@ -197,28 +201,26 @@ export function buildProgressExpandedText(
   }, theme);
   const statsParts = [modelLabel, statsLine].filter(Boolean);
   if (statsParts.length > 0) {
-    lines.push(statsParts.join(" "));
+    lines.push(row(statsParts.join(" ")));
   }
 
   // Task
   if (progress.task) {
-    lines.push("");
-    lines.push(theme.fg("dim", "Task: " + progress.task));
+    lines.push(row(""));
+    lines.push(block(theme.fg("dim", "Task: " + progress.task)));
   }
 
   // Tool calls history
   if (progress.toolCalls && progress.toolCalls.length > 0) {
-    lines.push("");
+    lines.push(row(""));
     for (const call of progress.toolCalls) {
-      lines.push(formatToolCall(call, theme));
+      lines.push(block(formatToolCall(call, theme)));
     }
   }
 
   // Activity
   if (progress.currentTool) {
-    const argsPreview = progress.currentToolArgs
-      ? truncLine(progress.currentToolArgs, 60)
-      : "";
+    const argsPreview = progress.currentToolArgs ?? "";
     const durationPart = progress.currentToolStartedAt
       ? " | " + formatDuration(Date.now() - progress.currentToolStartedAt)
       : "";
@@ -229,19 +231,19 @@ export function buildProgressExpandedText(
     if (durationPart) {
       line += theme.fg("dim", durationPart);
     }
-    lines.push("");
-    lines.push(line);
+    lines.push(row(""));
+    lines.push(row(line));
   }
 
   // Status at bottom
   if (progress.status === "completed" || progress.outcome) {
-    lines.push("");
-    const row = buildOutcomeLine({ outcome: progress.outcome, error: progress.error }, theme);
-    lines.push(row ?? theme.fg("success", "✓ Done"));
+    lines.push(row(""));
+    const outcomeLine = buildOutcomeLine({ outcome: progress.outcome, error: progress.error }, theme);
+    lines.push(row(outcomeLine ?? theme.fg("success", "✓ Done")));
   } else if (progress.status === "failed") {
-    lines.push("");
-    lines.push(outcomeRow({ outcome: undefined, error: progress.error }, theme, { failed: "Failed" }));
+    lines.push(row(""));
+    lines.push(row(outcomeRow({ outcome: undefined, error: progress.error }, theme, { failed: "Failed" })));
   }
 
-  return lines.join("\n");
+  return lines;
 }

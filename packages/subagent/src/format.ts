@@ -23,27 +23,6 @@ export function formatCost(cost: number): string {
 }
 
 /**
- * Truncate plain text to a max character length, appending "..." if truncated.
- *
- * Unlike truncateToWidth from pi-tui, this does not handle wide characters or
- * measure ANSI display width. The benefit: the "..." is plain text so it
- * inherits any ANSI color wrapper applied around the result (pi-tui's
- * truncateToWidth appends "..." after closing color codes, leaving it unstyled).
- *
- * If the text contains newlines, truncates at the first newline boundary
- * rather than bleeding into the next line.
- */
-export function truncLine(text: string, maxLen: number): string {
-  // Check for newline first — it's a hard boundary regardless of length
-  const nlIdx = text.indexOf("\n");
-  if (nlIdx !== -1) {
-    return text.slice(0, nlIdx).slice(0, maxLen - 3) + "...";
-  }
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen - 3) + "...";
-}
-
-/**
  * Renders one section per parallel result. The header line is intentionally
  * byte-identical to the pre-#55 metrics summary (a contract, not an
  * accident); the body mirrors the single-mode fallback chain
@@ -110,12 +89,16 @@ export function formatSingleResult(result: SubagentResult): string {
  *
  * `undefined` means "nothing to report yet" (the run is still going), which is
  * what leaves the callers' running / tool-call rendering untouched.
+ *
+ * The error text is not capped here: rows are cut at the width pi renders them
+ * at, by `RowBlock` (see `row-block.ts`). A fixed character cap is what made
+ * these rows die at a third of the frame on a wide terminal.
  */
 export function buildOutcomeLine(
   data: { outcome?: RunOutcome | undefined; error: string | undefined },
   theme: { fg: (token: string, text: string) => string },
 ): string | undefined {
-  if (data.error) return theme.fg("error", "✗ " + truncLine(data.error, 80));
+  if (data.error) return theme.fg("error", "✗ " + data.error);
   if (data.outcome === "truncated") {
     return theme.fg("warning", "⚠ Truncated — hit the output token limit, answer is partial");
   }
@@ -156,9 +139,9 @@ export function buildStatsLine(
   return parts.map(p => theme.fg("dim", "· " + p)).join(" ");
 }
 
-// Build an agent label for display: "agentName: truncated task preview".
-// Truncation width of 60 keeps compact rows readable on standard terminal widths
-// while still showing meaningful task context.
+// Build an agent label for display: "agentName: task preview".
+// The task is passed through whole: the row it lands on is cut at the render
+// width by `RowBlock`, so the preview fills whatever frame pi draws it in.
 export function buildAgentLabel(
   agent: string,
   task: string | undefined,
@@ -166,7 +149,7 @@ export function buildAgentLabel(
 ): string {
   const name = theme.bold(agent);
   if (task) {
-    return name + theme.fg("dim", ": " + truncLine(task, 60));
+    return name + theme.fg("dim", ": " + task);
   }
   return name;
 }

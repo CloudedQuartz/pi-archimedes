@@ -1,0 +1,470 @@
+/**
+ * Row-width audit for the `subagent` **tool rows** (the transcript rows, not the
+ * `/agents` overlay — that one is `agent-panel.width-audit.test.ts`).
+ *
+ * The defect this audits: a `bash` row runs to the right edge of the terminal,
+ * because pi truncates at the width it is actually rendering at
+ * (`VisualLinePreview` / `truncateToVisualLines`, which take `render(width)`'s
+ * width). Our rows ran through a hardcoded character cap — `truncLine(task, 60)`
+ * — so on an 200-column terminal the row died at about a third of the frame.
+ *
+ * The invariant, at every width pi can hand a component:
+ *
+ *   1. one logical line per row — a long task must not become a wrapped block
+ *      (pi-tui's `Text.render(width)` wraps, which is why the rows cannot just
+ *      be left uncapped inside a `Text`);
+ *   2. a truncated row **fills the frame**: its drawn width is the render width
+ *      (± one cell: a wide glyph that would straddle the boundary is dropped by
+ *      `sliceByColumn`'s strict mode, so a CJK/emoji row can land one cell short);
+ *   3. no rendered row is wider than the frame, whatever the content — ASCII,
+ *      CJK-heavy or emoji-heavy;
+ *   4. and the row is *not* capped at 60: at a 200-column width the content is
+ *      far longer than the old cap.
+ *
+ * Paths exercised (all reached through the registered tool definition, so the
+ * audit walks the real render path rather than a helper it hopes is on it):
+ *
+ *   renderCall                                   — the call row
+ *   renderResult → renderSubagentResult
+ *     ├─ results[0]                  → compact single      (3 rows)
+ *     ├─ progress[0]                 → compact progress    (3 rows, streaming)
+ *     ├─ results[0..n]               → compact parallel    (3 rows per agent)
+ *     ├─ progress[0..n]              → compact parallel progress
+ *     ├─ expanded: results[0]        → expanded single     (rows + wrapped blocks)
+ *     ├─ expanded: progress[0]       → expanded progress
+ *     └─ expanded: results/progress  → expanded parallel
+ */
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import * as fc from "fast-check";
+import { Box, Container, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+
+const discoverAgents = vi.hoisted(() => vi.fn());
+const executeSubagent = vi.hoisted(() => vi.fn());
+const executeParallel = vi.hoisted(() => vi.fn());
+
+vi.mock("./agents.js", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  discoverAgents,
+}));
+vi.mock("./execute.js", () => ({ executeSubagent, executeParallel }));
+
+const { registerSubagent } = await import("./index.js");
+
+// ── Fixtures ────────────────────────────────────────────────────────────────
+
+/** The task from the maintainer's screenshot: long, and ASCII. */
+const ASCII_TASK =
+  ("Handle the review cycle for PR #107 in /home/daniel/Coding/Javascript/pi-archimedes and report every finding with a file:line reference. ").repeat(2);
+/** East-asian text: every glyph is two cells, so a character cap is meaningless. */
+const CJK_TASK = "検証サイクルをPR107で実行して結果を報告".repeat(8);
+/** Emoji: vary in width and carry joiners, the classic over-flow case. */
+const EMOJI_TASK = "🚀 ship 🔥 the ✅ change 🧪 with 📦 care 🎯 now ".repeat(6);
+
+const TASKS: Array<{ label: string; task: string; slack: number }> = [
+  // `slack` is how many cells short of the frame a truncated row may legitimately
+  // land: 0 for ASCII, 1 when a double-width glyph sits on the boundary.
+  { label: "ascii", task: ASCII_TASK, slack: 0 },
+  { label: "cjk", task: CJK_TASK, slack: 1 },
+  { label: "emoji", task: EMOJI_TASK, slack: 1 },
+];
+
+const WIDTHS = [200, 120, 80, 60, 40];
+
+/** A theme that emits real SGR sequences, so measured rows carry ANSI. */
+const TOKEN_SGR: Record<string, string> = {
+  dim: "\x1b[2m",
+  muted: "\x1b[90m",
+  error: "\x1b[31m",
+  success: "\x1b[32m",
+  warning: "\x1b[33m",
+  accent: "\x1b[36m",
+  toolTitle: "\x1b[34m",
+};
+const theme = {
+  fg: (token: string, text: string) => `${TOKEN_SGR[token] ?? "\x1b[37m"}${text}\x1b[0m`,
+  bold: (text: string) => `\x1b[1m${text}\x1b[0m`,
+};
+
+// ── The registered tool, with its real renderers ────────────────────────────
+
+interface ToolDef {
+  name: string;
+  renderCall: (args: unknown, theme: unknown, ctx: unknown) => RowComponent;
+  renderResult: (
+    result: unknown,
+    options: unknown,
+    theme: unknown,
+    context: unknown,
+  ) => RowComponent;
+}
+
+interface RowComponent {
+  render(width: number): string[];
+  invalidate(): void;
+}
+
+function registerTool(): ToolDef {
+  const tools: ToolDef[] = [];
+  const pi = {
+    registerTool: (def: ToolDef) => tools.push(def),
+    on: () => {},
+    getAllTools: () => [{ name: "read" }, { name: "bash" }],
+  };
+  registerSubagent(pi as never);
+  const def = tools.find((t) => t.name === "subagent");
+  if (!def) throw new Error("subagent tool was not registered");
+  return def;
+}
+
+function makeResult(overrides: Record<string, unknown> = {}) {
+  return {
+    agent: "general",
+    task: ASCII_TASK,
+    exitCode: 0,
+    usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.01, turns: 3 },
+    model: "anthropic/claude-opus-4.5",
+    finalOutput: undefined,
+    error: undefined,
+    progress: undefined,
+    progressSummary: { toolCount: 5, tokens: 1500, durationMs: 3000 },
+    outcome: "completed",
+    ...overrides,
+  };
+}
+
+function makeProgress(overrides: Record<string, unknown> = {}) {
+  return {
+    agent: "general",
+    status: "running",
+    task: ASCII_TASK,
+    currentTool: "bash",
+    currentToolArgs: `git diff HEAD~5 --stat ${"-v".repeat(40)}`,
+    currentToolStartedAt: Date.now() - 2000,
+    toolCount: 2,
+    inputTokens: 50,
+    outputTokens: 30,
+    tokens: 80,
+    cost: 0.005,
+    durationMs: 1000,
+    error: undefined,
+    model: "anthropic/claude-opus-4.5",
+    output: undefined,
+    recentOutput: undefined,
+    toolCalls: [
+      { name: "read", argsPreview: `packages/subagent/src/${"agent".repeat(12)}.ts`, error: false },
+      { name: "bash", argsPreview: `pnpm -r exec -- tsc --noEmit ${"—".repeat(30)}`, error: true },
+    ],
+    ...overrides,
+  };
+}
+
+/** Every way the tool can be asked to draw a row family. */
+function rowComponents(task: string): Array<{ path: string; component: () => RowComponent }> {
+  const tool = registerTool();
+  const result = makeResult({ task });
+  const progress = makeProgress({ task });
+  const parallel = {
+    mode: "parallel",
+    results: [makeResult({ task }), makeResult({ agent: "reviewer", task, exitCode: 1, error: `spawn failed: ${"x".repeat(120)}` })],
+    progress: undefined,
+  };
+  const parallelProgress = {
+    mode: "parallel",
+    results: [],
+    progress: [makeProgress({ task }), makeProgress({ agent: "reviewer", task, currentTool: undefined })],
+  };
+  const streaming = { mode: "single", results: [], progress: [makeProgress({ task })] };
+  const ctx = () => ({ state: {}, invalidate: () => {} });
+
+  return [
+    {
+      path: "renderCall",
+      component: () => tool.renderCall({ agent: "general", tasks: undefined }, theme, ctx()),
+    },
+    {
+      path: "compact:single",
+      component: () =>
+        tool.renderResult(
+          { content: [], details: { mode: "single", results: [result], progress: undefined }, isError: false },
+          { expanded: false },
+          theme,
+          ctx(),
+        ),
+    },
+    {
+      path: "compact:progress",
+      component: () =>
+        tool.renderResult(
+          { content: [], details: streaming, isError: false },
+          { expanded: false },
+          theme,
+          ctx(),
+        ),
+    },
+    {
+      path: "compact:parallel",
+      component: () =>
+        tool.renderResult(
+          { content: [], details: parallel, isError: false },
+          { expanded: false },
+          theme,
+          ctx(),
+        ),
+    },
+    {
+      path: "compact:parallel-progress",
+      component: () =>
+        tool.renderResult(
+          { content: [], details: parallelProgress, isError: false },
+          { expanded: false },
+          theme,
+          ctx(),
+        ),
+    },
+    {
+      path: "expanded:single",
+      component: () =>
+        tool.renderResult(
+          { content: [], details: { mode: "single", results: [result], progress: [makeProgress({ task })] }, isError: false },
+          { expanded: true },
+          theme,
+          ctx(),
+        ),
+    },
+    {
+      path: "expanded:progress",
+      component: () =>
+        tool.renderResult(
+          { content: [], details: streaming, isError: false },
+          { expanded: true },
+          theme,
+          ctx(),
+        ),
+    },
+    {
+      path: "expanded:parallel",
+      component: () =>
+        tool.renderResult(
+          { content: [], details: parallel, isError: false },
+          { expanded: true },
+          theme,
+          ctx(),
+        ),
+    },
+  ];
+}
+
+// ── Measurement ─────────────────────────────────────────────────────────────
+
+/** The drawn text of a rendered line, with trailing padding removed. */
+function content(line: string): string {
+  return stripTerminalSequences(line).replace(/\s+$/, "");
+}
+
+/**
+ * A row is *full width* when the text it draws reaches the right edge — the
+ * property the maintainer asked for ("notice how the bash tool goes full
+ * width"). Padding spaces do not count: they are removed by `content()`.
+ */
+function isFullWidth(line: string, width: number, slack: number): boolean {
+  const drawn = visibleWidth(content(line));
+  return drawn >= width - slack && drawn <= width;
+}
+
+interface RowReport {
+  path: string;
+  task: string;
+  width: number;
+  index: number;
+  line: string;
+  drawn: number;
+}
+
+function rowsOver(width: number): RowReport[] {
+  const over: RowReport[] = [];
+  for (const fixture of TASKS) {
+    for (const entry of rowComponents(fixture.task)) {
+      const lines = entry.component().render(width);
+      lines.forEach((line, index) => {
+        const drawn = visibleWidth(stripTerminalSequences(line));
+        if (drawn > width) over.push({ path: entry.path, task: fixture.label, width, index, line, drawn });
+      });
+    }
+  }
+  return over;
+}
+
+const summarize = (rows: RowReport[]) =>
+  rows
+    .slice(0, 4)
+    .map((r) => `${r.path}/${r.task}@${r.width}:row${r.index}=${r.drawn} ${JSON.stringify(content(r.line).slice(0, 40))}`)
+    .join("\n  ");
+
+// ── The audit ───────────────────────────────────────────────────────────────
+
+describe("subagent tool rows: width audit", () => {
+  beforeEach(() => {
+    discoverAgents.mockReturnValue([]);
+  });
+
+  it("never draws a row wider than the frame, at any width or content", () => {
+    const over: RowReport[] = [];
+    for (const width of WIDTHS) over.push(...rowsOver(width));
+    expect(over, `${over.length} over-frame row(s):\n  ${summarize(over)}`).toEqual([]);
+  });
+
+  it("renders the task row as ONE row that fills the frame, at every width", () => {
+    const failures: string[] = [];
+    for (const width of WIDTHS) {
+      for (const fixture of TASKS) {
+        const compact = rowComponents(fixture.task).find((e) => e.path === "compact:single")!;
+        const lines = compact.component().render(width);
+        const label = lines[0] ?? "";
+        const drawn = visibleWidth(content(label));
+        if (lines.length !== 3) {
+          failures.push(`${fixture.label}@${width}: compact block is ${lines.length} rows, expected 3 (one per logical line):\n  ${JSON.stringify(lines.map(content))}`);
+        } else if (!isFullWidth(label, width, fixture.slack)) {
+          failures.push(
+            `${fixture.label}@${width}: task row draws ${drawn} of ${width} columns (slack ${fixture.slack}): ${JSON.stringify(content(label))}`,
+          );
+        } else if (!content(label).endsWith("...")) {
+          failures.push(`${fixture.label}@${width}: truncated task row lost its ellipsis: ${JSON.stringify(content(label))}`);
+        }
+      }
+    }
+    expect(failures, failures.join("\n  ")).toEqual([]);
+  });
+
+  it("is not capped at 60 characters: a wide frame carries a long task", () => {
+    for (const width of WIDTHS) {
+      for (const fixture of TASKS) {
+        const lines = rowComponents(fixture.task)
+          .find((e) => e.path === "compact:single")!
+          .component()
+          .render(width);
+        const drawn = visibleWidth(content(lines[0] ?? ""));
+        // A 60-character cap tops out around 69 columns however wide the frame
+        // is, so anything at (or near) the frame cannot be the old cap.
+        expect(
+          drawn,
+          `task row capped early at ${width} columns: ${JSON.stringify(content(lines[0] ?? ""))}`,
+        ).toBeGreaterThanOrEqual(width - fixture.slack);
+      }
+    }
+  });
+
+  it("fills the frame on the other row family members too (args, error, activity)", () => {
+    const longError = `spawn failed: ${"command not found".repeat(20)}`;
+    const cases: Array<{ path: string; details: unknown; row: number }> = [
+      // Activity row carries the current tool's args while streaming.
+      { path: "compact:progress", details: { mode: "single", results: [], progress: [makeProgress({ currentToolArgs: longError })] }, row: 2 },
+      // Activity row carries the error for a failed run.
+      {
+        path: "compact:single",
+        details: { mode: "single", results: [makeResult({ outcome: undefined, exitCode: 1, error: longError })], progress: undefined },
+        row: 2,
+      },
+      // Activity row carries the last completed call's args.
+      {
+        path: "compact:progress",
+        details: {
+          mode: "single",
+          results: [],
+          progress: [makeProgress({ currentTool: undefined, currentToolArgs: undefined, toolCalls: ["x".repeat(400)] })],
+        },
+        row: 2,
+      },
+      // The expanded view's own label row.
+      {
+        path: "expanded:single",
+        details: { mode: "single", results: [makeResult()], progress: undefined },
+        row: 0,
+      },
+    ];
+
+    for (const width of WIDTHS) {
+      for (const c of cases) {
+        const component = registerTool().renderResult(
+          { content: [], details: c.details, isError: false },
+          { expanded: c.path.startsWith("expanded") },
+          theme,
+          { state: {}, invalidate: () => {} },
+        );
+        const lines = component.render(width);
+        const drawn = visibleWidth(content(lines[c.row] ?? ""));
+        expect(
+          drawn,
+          `${c.path} row ${c.row} @${width} draws ${drawn} of ${width}: ${JSON.stringify(content(lines[c.row] ?? ""))}`,
+        ).toBeGreaterThanOrEqual(width - 1);
+      }
+    }
+  });
+
+  it("holds the invariant for arbitrary content (fast-check)", () => {
+    const widths = [200, 120, 80, 60, 40];
+    // Wide-character and emoji content, plus whatever else the generator likes.
+    const wideTask = fc.stringMatching(/[\u3040-\u30ff\p{Emoji_Presentation}a-z ]{1,200}/u);
+    fc.assert(
+      fc.property(wideTask, (task) => {
+        for (const width of widths) {
+          for (const line of rowComponents(task)
+            .filter((e) => e.path !== "renderCall")
+            .flatMap((e) => e.component().render(width))) {
+            if (visibleWidth(stripTerminalSequences(line)) > width) return false;
+          }
+        }
+        return true;
+      }),
+      { numRuns: 50 },
+    );
+
+    fc.assert(
+      fc.property(fc.string({ minLength: 1, maxLength: 400 }), (error) => {
+        for (const width of widths) {
+          const details = {
+            mode: "single",
+            results: [makeResult({ outcome: undefined, exitCode: 1, error })],
+            progress: undefined,
+          };
+          const component = registerTool().renderResult(
+            { content: [], details, isError: true },
+            { expanded: false },
+            theme,
+            { state: {}, invalidate: () => {} },
+          );
+          for (const line of component.render(width)) {
+            if (visibleWidth(stripTerminalSequences(line)) > width) return false;
+          }
+        }
+        return true;
+      }),
+      { numRuns: 50 },
+    );
+  });
+
+  it("still fits inside pi's own tool shell (Container → Box padding)", () => {
+    for (const width of WIDTHS) {
+      const shell = new Container();
+      const box = new Box(1, 1, (t) => `\x1b[40m${t}\x1b[0m`);
+      box.addChild(rowComponents(ASCII_TASK).find((e) => e.path === "compact:single")!.component());
+      shell.addChild(box);
+      const lines = shell.render(width);
+      const tooWide: RowReport[] = lines
+        .map((line, index) => ({
+          path: "shell",
+          task: "ascii",
+          width,
+          index,
+          line,
+          drawn: visibleWidth(stripTerminalSequences(line)),
+        }))
+        .filter((r) => r.drawn > width);
+      expect(
+        tooWide,
+        `rows overflow pi's shell at ${width}:\n  ${summarize(tooWide)}`,
+      ).toEqual([]);
+      expect(lines.length).toBeGreaterThan(0);
+    }
+  });
+});

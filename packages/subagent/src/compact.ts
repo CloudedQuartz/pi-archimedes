@@ -1,13 +1,24 @@
-import { Text } from "@earendil-works/pi-tui";
+import type { Text } from "@earendil-works/pi-tui";
 import type { RunOutcome, SubagentDetails, SubagentProgress, SubagentResult, SubagentToolCall, SubagentToolResult } from "./types.js";
-import { formatDuration, truncLine, buildStatsLine, buildAgentLabel, buildOutcomeLine } from "./format.js";
+import { formatDuration, buildStatsLine, buildAgentLabel, buildOutcomeLine } from "./format.js";
 import { renderToolCallLine } from "@pi-archimedes/core/tool-render";
 
 type Theme = { fg: (token: string, text: string) => string; bold: (text: string) => string };
 type RenderContext = { state: Record<string, unknown>; invalidate: () => void };
 
+/**
+ * What a compact block is drawn into. All these builders need is `setText`; the
+ * component `render.ts` supplies is a `RowBlock`, whose job is to cut every
+ * logical line at the width pi renders it at (`row-block.ts`).
+ */
+export type RowSink = Pick<Text, "setText">;
+
 // ── Activity line builder ───────────────────────────────────────────────────
 
+// The builders below hand back whole content, never a fixed-length preview: the
+// row each line lands on is cut at the width pi renders at (`RowBlock`,
+// `row-block.ts`), so a long task or error fills the frame instead of stopping at
+// 60 or 80 characters.
 interface ActivityData {
   currentTool: string | undefined;
   currentToolArgs: string | undefined;
@@ -25,7 +36,7 @@ export function buildActivityLine(
   theme: Theme,
 ): string {
   if (data.error) {
-    return theme.fg("error", "✗ " + truncLine(data.error, 80));
+    return theme.fg("error", "✗ " + data.error);
   }
 
   // A finished run reports its outcome: Done / Truncated / Aborted. Truncated and
@@ -48,9 +59,7 @@ export function buildActivityLine(
 
   // Running: show the current tool with the running glyph ▸ + live duration.
   if (data.currentTool) {
-    const argsPreview = data.currentToolArgs
-      ? truncLine(data.currentToolArgs, 60)
-      : "";
+    const argsPreview = data.currentToolArgs ?? "";
     const durationPart = data.currentToolStartedAt
       ? " | " + formatDuration(Date.now() - data.currentToolStartedAt)
       : "";
@@ -64,12 +73,10 @@ export function buildActivityLine(
     const lastCall = data.toolCalls[data.toolCalls.length - 1];
     if (lastCall) {
       if (typeof lastCall === "string") {
-        return renderToolCallLine("success", truncLine(lastCall, 60), "", theme);
+        return renderToolCallLine("success", lastCall, "", theme);
       }
       const status = lastCall.error ? "error" : "success";
-      const suffix = lastCall.argsPreview
-        ? ": " + truncLine(lastCall.argsPreview, 60)
-        : "";
+      const suffix = lastCall.argsPreview ? ": " + lastCall.argsPreview : "";
       return renderToolCallLine(status, lastCall.name, suffix, theme);
     }
   }
@@ -77,7 +84,7 @@ export function buildActivityLine(
   // Running, no tool history: show first line of streamed output (▸, muted).
   if (data.finalOutput) {
     const firstLine = data.finalOutput.split("\n")[0] ?? "";
-    return renderToolCallLine("running", truncLine(firstLine, 80), "", theme);
+    return renderToolCallLine("running", firstLine, "", theme);
   }
 
   // Running, no info yet
@@ -106,6 +113,8 @@ type AgentBlockData = {
 //   <agent>: <task>
 //   <model> · <stats>
 //   <activity>          (status lives here — "✓ Done" / "✗ Failed" / ▸ tool)
+// Each of the three lines is one row of the rendered frame: `renderCompact*`
+// hand the text to a component that cuts every logical line at the render width.
 function buildAgentBlock(data: AgentBlockData, theme: Theme): string {
   const statsLine = buildStatsLine(data.statsData, theme);
   const modelLabel = data.model ? theme.fg("accent", data.model) : "";
@@ -122,12 +131,12 @@ function buildAgentBlock(data: AgentBlockData, theme: Theme): string {
 }
 
 export function renderCompactSingle(
-  text: Text,
+  text: RowSink,
   result: SubagentResult,
   progress: SubagentProgress | undefined,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowSink {
   // agentName sourced from result; defaults to "subagent"
   const agentName = result.agent ?? "subagent";
   const summary = result.progressSummary ?? { toolCount: 0, tokens: 0, durationMs: 0 };
@@ -177,11 +186,11 @@ export function renderCompactSingle(
 // ── Compact parallel agents ─────────────────────────────────────────────────
 
 export function renderCompactParallel(
-  text: Text,
+  text: RowSink,
   details: SubagentDetails,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowSink {
   const lines = details.results.map((result, i) => {
     const progress = details.progress?.[i];
     const agentName = result.agent ?? "subagent";
@@ -229,11 +238,11 @@ export function renderCompactParallel(
 // ── Compact streaming progress ──────────────────────────────────────────────
 
 export function renderCompactProgress(
-  text: Text,
+  text: RowSink,
   progress: SubagentProgress,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowSink {
   // agentName sourced from progress; defaults to "subagent"
   const agentName = progress.agent ?? "subagent";
   const status = progress.status;
@@ -281,11 +290,11 @@ export function renderCompactProgress(
 // ── Compact parallel streaming progress ─────────────────────────────────────
 
 export function renderCompactParallelProgress(
-  text: Text,
+  text: RowSink,
   details: SubagentDetails,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowSink {
   const lines = (details.progress ?? []).map((progress) => {
     const agentName = progress.agent ?? "subagent";
     const status = progress.status;

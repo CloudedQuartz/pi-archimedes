@@ -366,81 +366,79 @@ describe("renderCompactParallel", () => {
 
 // ── Property tests (fast-check) ────────────────────────────────────────────
 
-describe("buildActivityLine property tests", () => {
-  it("truncated error never exceeds truncLine limit of 80 chars", () => {
+// The cap property tests that used to live here pinned "≤ 60 / ≤ 80 characters".
+// That rule is gone: rows are cut at the width pi renders them at, which is
+// audited against the real renderers in `tool-row.width-audit.test.ts`, and the
+// cutting itself (cells, colour, newlines) in `row-block.test.ts`. What these
+// builders owe that audit is the *whole* content, so the row — not the builder —
+// decides where the line ends.
+describe("buildActivityLine hands its row whole content (no character cap)", () => {
+  /** Remove the mock theme's `[token]`/`[/token]` markers (fixtures exclude `[`). */
+  const stripMarkers = (s: string) => s.replace(/\[\/?(?:muted|running|success|error|dim|accent)\]/g, "");
+
+  it("carries an error far longer than the old 80-character limit", () => {
     fc.assert(
       fc.property(
-        fc.string({ minLength: 1, maxLength: 500 }),
+        fc.string({ minLength: 81, maxLength: 500 }).filter((s) => !s.includes("[")),
         (error) => {
           const { theme } = makeMockTheme();
           const result = buildActivityLine(
             activityData({ error, status: "running" }),
             theme,
           );
-          // Strip the "✗ " prefix and ANSI tags to get the actual truncated text
-          const withoutPrefix = result.replace(/^\[error\]✗ /, "");
-          // The visible text (without closing ANSI tag) should be <= 80
-          const visibleText = withoutPrefix.replace(/\[\/error\]$/, "");
-          expect(visibleText.length).toBeLessThanOrEqual(80);
+          expect(stripMarkers(result)).toBe("✗ " + error);
         },
       ),
     );
   });
 
-  it("truncated argsPreview never exceeds truncLine limit of 60 chars", () => {
+  it("carries args far longer than the old 60-character limit", () => {
     fc.assert(
       fc.property(
-        fc.string({ minLength: 1, maxLength: 20 }).filter((s) => !s.includes(": ") && !s.includes("\n") && !s.includes("|")),
-        fc.string({ minLength: 1, maxLength: 500 }).filter((s) => !s.includes(": ") && !s.includes("\n") && !s.includes("|")),
+        fc.string({ minLength: 1, maxLength: 20 }).filter((s) => !s.includes(": ") && !s.includes("\n") && !s.includes("|") && !s.includes("[")),
+        fc.string({ minLength: 61, maxLength: 500 }).filter((s) => !s.includes(": ") && !s.includes("\n") && !s.includes("|") && !s.includes("[")),
         (currentTool, currentToolArgs) => {
           const { theme } = makeMockTheme();
           const result = buildActivityLine(
             activityData({ status: "running", currentTool, currentToolArgs }),
             theme,
           );
-          // Extract the args portion after ": "
-          const argsMatch = result.match(/: (.+?)(?:\s\|.*|\[\/dim\].*)?$/);
-          expect(argsMatch).not.toBeNull();
-          const argsText = argsMatch![1]!.replace(/\[\/dim\]$/, "").replace(/\[dim\]/, "");
-          expect(argsText.length).toBeLessThanOrEqual(60);
+          const visible = stripMarkers(result);
+          expect(visible.includes(currentToolArgs)).toBe(true);
         },
       ),
     );
   });
 
-  it("truncated finalOutput first line never exceeds truncLine limit of 80 chars", () => {
+  it("carries the first line of output whole, and never a second line", () => {
     fc.assert(
       fc.property(
-        fc.string({ minLength: 1, maxLength: 500 }),
-        (finalOutput) => {
+        fc.string({ minLength: 81, maxLength: 500 }).filter((s) => !s.includes("\n") && !s.includes("[")),
+        (firstLine) => {
           const { theme } = makeMockTheme();
           const result = buildActivityLine(
-            activityData({ status: "running", finalOutput }),
+            activityData({ status: "running", finalOutput: `${firstLine}\nsecond line\nthird` }),
             theme,
           );
-          // Strip ANSI tags to get visible text
-          const visible = result.replace(/\[muted\]/g, "").replace(/\[\/muted\]/g, "");
-          // The visible text after the running glyph "▸ " should be <= 80
-          const afterArrow = visible.replace(/^▸ /, "");
-          expect(afterArrow.length).toBeLessThanOrEqual(80);
+          const visible = stripMarkers(result);
+          expect(visible).toBe("▸ " + firstLine);
         },
       ),
     );
   });
 
-  it("truncated string toolCall never exceeds truncLine limit of 60 chars", () => {
+  it("carries a string tool call far longer than the old 60-character limit", () => {
     fc.assert(
       fc.property(
-        fc.string({ minLength: 1, maxLength: 500 }),
+        fc.string({ minLength: 61, maxLength: 500 }).filter((s) => !s.includes("\n") && !s.includes("[")),
         (toolCallStr) => {
           const { theme } = makeMockTheme();
           const result = buildActivityLine(
             activityData({ status: "running", toolCalls: [toolCallStr] }),
             theme,
           );
-          const visible = result.replace(/\[dim\]/g, "").replace(/\[\/dim\]/g, "");
-          const afterArrow = visible.replace(/^▸ /, "");
-          expect(afterArrow.length).toBeLessThanOrEqual(60);
+          const visible = stripMarkers(result);
+          expect(visible.includes(toolCallStr)).toBe(true);
         },
       ),
     );
