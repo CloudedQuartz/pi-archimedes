@@ -38,8 +38,8 @@ import { screenCapabilities, screenMode } from "@pi-archimedes/core/screen-mode"
 import { reportPiSupport } from "@pi-archimedes/core/pi-support";
 import { getUISettingsItems } from "./settings.js";
 import { migrateCoreToUIConfig, migrateCompactThinkingToStyle, migrateRemovedToolPatch } from "./migration.js";
-import { registerBashToolOverride, clearActiveBashIntervals } from "./bash/index.js";
-import { registerCodemodeToolOverride, clearActiveCodemodeIntervals } from "./codemode/index.js";
+import { renderBashCall, renderBashResult } from "./bash/index.js";
+import { renderCodemodeCall, renderCodemodeResult } from "./codemode/index.js";
 
 // Re-exports
 export { getUISettingsItems } from "./settings.js";
@@ -65,11 +65,51 @@ let uiCtx: ExtensionContext | undefined;
 let spinFlag = false;
 let spinInterval: ReturnType<typeof setInterval> | undefined;
 
+/**
+ * Which Archimedes tool rows the current session asks for, refreshed at every
+ * `session_start` and read by the renderer resolver. The resolver itself is
+ * registered once per extension load — pi keeps a list of resolvers per
+ * extension, so registering it from `session_start` would stack a duplicate on
+ * every `/reload` — which means the settings have to be read here rather than
+ * inside the resolver: `renderCall`/`renderResult` run on every frame.
+ */
+let styledTools = { bash: false, codemode: false };
+
 function clearSpinInterval(): void {
   if (spinInterval) {
     clearInterval(spinInterval);
     spinInterval = undefined;
   }
+}
+
+/**
+ * Draw the bash row through pi's renderer resolution (ADR 0029).
+ *
+ * `registerToolRenderer()` was added in pi 1.0.1 precisely for presentation
+ * overrides: it chooses how calls to a tool are drawn without registering the
+ * tool, and `next()` hands the tool to the remaining resolvers and then to
+ * whatever is registered. Off settings therefore give back pi's own row rather
+ * than the previous arrangement — re-registering `bash` from
+ * `createBashToolDefinition()` with our renderers bolted on — which also means
+ * anything pi later adds to that tool cannot be silently dropped by us.
+ */
+function registerToolRenderers(pi: ExtensionAPI): void {
+  // Capability check, not a version wish: on a host without the API there is
+  // nothing to resolve through, and pi's own rows stand in.
+  if (typeof pi.registerToolRenderer !== "function") return;
+
+  pi.registerToolRenderer((toolName, next) => {
+    // `next()` is spread first so that whatever the built-in definition
+    // declares besides the two renderers — `renderShell` is the one that matters
+    // today — survives resolution instead of being silently dropped by us.
+    const ours =
+      toolName === "bash" && styledTools.bash
+        ? { renderCall: renderBashCall, renderResult: renderBashResult }
+        : toolName === "codemode" && styledTools.codemode
+          ? { renderCall: renderCodemodeCall, renderResult: renderCodemodeResult }
+          : undefined;
+    return ours ? { ...next(), ...ours } : next();
+  });
 }
 
 export function registerUI(pi: ExtensionAPI): void {
@@ -80,6 +120,9 @@ export function registerUI(pi: ExtensionAPI): void {
   // withheld on a below-floor host, because a `ui` that registered nothing
   // would make /plugins report an enabled package that did nothing.
   reportPiSupport("ui", "1.2.0");
+
+  // Registered once per extension load, before any session exists (ADR 0029).
+  registerToolRenderers(pi);
 
   // One-time migration of any legacy core config to UI config
   migrateCoreToUIConfig();
@@ -96,12 +139,14 @@ export function registerUI(pi: ExtensionAPI): void {
 
   // session_shutdown handler (top-level to prevent accumulation on /reload)
   pi.on("session_shutdown", (_event, ctx) => {
-    clearActiveBashIntervals();
-    clearActiveCodemodeIntervals();
-
     const targetCtx = ctx?.hasUI ? ctx : uiCtx;
     if (targetCtx?.hasUI) {
       targetCtx.ui.setWorkingVisible(true);
+      // Give back everything the session borrowed: pi's animated indicator and
+      // its own hidden-thinking wording, so a session that starts after this
+      // one (or after `/reload` with the plugin off) sees pi's defaults.
+      targetCtx.ui.setWorkingIndicator(undefined);
+      targetCtx.ui.setHiddenThinkingLabel(undefined);
       targetCtx.ui.setEditorComponent(undefined);
     }
     clearSpinInterval();
@@ -123,25 +168,15 @@ export function registerUI(pi: ExtensionAPI): void {
 
     const config = loadUIConfig();
     const toolStyle = normalizeToolStyle(config.toolStyle);
+    const minimal = toolStyle === "Minimal";
 
-    // Master gate: `Minimal` = archimedes tool styling (the per-tool
-    // toggles fine-tune it); `Native` = no archimedes tool styling at all
-    // — the overrides are not registered, so pi's native tool rendering
-    // stands (and no built-in-takeover startup notice).
-    if (toolStyle === "Minimal") {
-      if (config.bashToolStyling !== false) {
-        registerBashToolOverride(pi, ctx.cwd);
-      }
-
-      // The codemode override replaces pi's built-in codemode extension
-      // (the same take-over the bash override does for the core bash
-      // tool). It loads the native definition from the running CLI and
-      // swaps in the Archimedes renderers; it is a no-op on pi versions
-      // without the codemode extension.
-      if (config.codemodeToolStyling !== false) {
-        void registerCodemodeToolOverride(pi);
-      }
-    }
+    // What the resolver answers with for this session (see `styledTools`).
+    // `Minimal` = archimedes tool styling (the per-tool toggles fine-tune it);
+    // `Native` = none of it, so pi's own rows stand everywhere.
+    styledTools = {
+      bash: minimal && config.bashToolStyling !== false,
+      codemode: minimal && config.codemodeToolStyling !== false,
+    };
 
     if (ctx.hasUI) {
       spinFlag = config.editorSpinBorder;
@@ -230,7 +265,18 @@ export function registerUI(pi: ExtensionAPI): void {
       }
 
       clearSpinInterval();
-      ctx.ui.setWorkingVisible(!spinFlag);
+      // pi's working row carries an animated indicator by default. When the
+      // border spinner is on, that animation would run twice, so the row is
+      // asked for no frames — it keeps showing what the agent is doing, in
+      // pi's own words, while the border carries the movement. Hiding the row
+      // wholesale (the old `setWorkingVisible(false)`) also took that message
+      // away, and on a `ctrl-o` screen it took the only sign of life.
+      ctx.ui.setWorkingIndicator(spinFlag ? { frames: [] } : undefined);
+
+      // The word a collapsed thinking block shows is pi's own row, so the
+      // setting is handed to pi rather than rebuilt here. An empty setting
+      // hands the label back to pi's default.
+      ctx.ui.setHiddenThinkingLabel(config.labelText.trim() || undefined);
 
       if (spinFlag) {
         // The border spinner lives in the editor frame, not in scrollback, so

@@ -57,16 +57,8 @@ vi.mock("./migration.js", () => ({
   UI_CONFIG_KEYS: [],
 }));
 
-vi.mock("./bash/index.js", () => ({
-  registerBashToolOverride: vi.fn(),
-  clearActiveBashIntervals: vi.fn(),
-}));
-
-vi.mock("./codemode/index.js", () => ({
-  registerCodemodeToolOverride: vi.fn(async () => true),
-  clearActiveCodemodeIntervals: vi.fn(),
-}));
-
+// The renderers stay real: the resolver hands them straight to pi, so the
+// tests can assert on their identity.
 import defaultExport, {
   registerUI,
   getUISettingsItems,
@@ -76,8 +68,8 @@ import defaultExport, {
   ANIMATION_STYLES,
 } from "./index.js";
 import { migrateCoreToUIConfig } from "./migration.js";
-import { registerBashToolOverride, clearActiveBashIntervals } from "./bash/index.js";
-import { registerCodemodeToolOverride, clearActiveCodemodeIntervals } from "./codemode/index.js";
+import { renderBashCall, renderBashResult } from "./bash/index.js";
+import { renderCodemodeCall, renderCodemodeResult } from "./codemode/index.js";
 import { patchThinkingRenderer } from "./thinking/patch.js";
 import { transformThinkingContent } from "./thinking/transform.js";
 import {
@@ -93,7 +85,9 @@ interface UiSpies {
   setHeader: ReturnType<typeof vi.fn>;
   setEditorComponent: ReturnType<typeof vi.fn>;
   setWorkingVisible: ReturnType<typeof vi.fn>;
+  setWorkingIndicator: ReturnType<typeof vi.fn>;
   notify: ReturnType<typeof vi.fn>;
+  setHiddenThinkingLabel: ReturnType<typeof vi.fn>;
 }
 
 function makeCtx(hasUI = true): { ctx: ExtensionContext; ui: UiSpies } {
@@ -101,7 +95,9 @@ function makeCtx(hasUI = true): { ctx: ExtensionContext; ui: UiSpies } {
     setHeader: vi.fn(),
     setEditorComponent: vi.fn(),
     setWorkingVisible: vi.fn(),
+    setWorkingIndicator: vi.fn(),
     notify: vi.fn(),
+    setHiddenThinkingLabel: vi.fn(),
   };
   const ctx = {
     hasUI,
@@ -114,37 +110,62 @@ function makeCtx(hasUI = true): { ctx: ExtensionContext; ui: UiSpies } {
   return { ctx, ui };
 }
 
+/** Stand-in for what `next()` hands back: pi's own renderers for the tool. */
+const NATIVE = Object.freeze({ native: true });
+
+/** What a resolver resolves for a tool name, and whether it called `next()`. */
+function resolve(
+  resolver: ((name: string, next: () => any) => any) | undefined,
+  toolName: string,
+): { result: unknown; nextCalls: number } {
+  let nextCalls = 0;
+  const result = resolver?.(toolName, () => {
+    nextCalls++;
+    return NATIVE;
+  });
+  return { result, nextCalls };
+}
+
 /** A `pi` handle whose `getSettings()` answers what pi would apply. */
 function makePi(settings: Record<string, unknown> = {}): {
   pi: ExtensionAPI;
   listeners: Record<string, ((event: any, ctx: any) => void)[]>;
+  renderers: ((name: string, next: () => any) => any)[];
 } {
   const listeners: Record<string, ((event: any, ctx: any) => void)[]> = {};
+  const renderers: ((name: string, next: () => any) => any)[] = [];
   const pi = {
     on: vi.fn((event: string, handler: (event: any, ctx: any) => void) => {
       listeners[event] = listeners[event] ?? [];
       listeners[event]!.push(handler);
     }),
     registerTool: vi.fn(),
+    registerToolRenderer: vi.fn(
+      (resolver: (name: string, next: () => any) => any) => {
+        renderers.push(resolver);
+      },
+    ),
     getSettings: vi.fn(() => settings),
   } as unknown as ExtensionAPI;
-  return { pi, listeners };
+  return { pi, listeners, renderers };
 }
 
 function setupHarness(
   settings: Record<string, unknown> = {},
 ): {
   pi: ExtensionAPI;
+  renderers: ((name: string, next: () => any) => any)[];
   triggerStart: (ctx: ExtensionContext) => void;
   triggerShutdown: (ctx: ExtensionContext) => void;
   triggerMessageEnd: (msg: unknown) => void;
 } {
-  const { pi, listeners } = makePi(settings);
+  const { pi, listeners, renderers } = makePi(settings);
 
   registerUI(pi);
 
   return {
     pi,
+    renderers,
     triggerStart: (ctx: ExtensionContext) => {
       for (const h of listeners["session_start"] ?? []) {
         h(null, ctx);
@@ -202,18 +223,128 @@ describe("packages/ui lifecycle and registration", () => {
     });
   });
 
-  describe("session_start with interactive UI (hasUI: true)", () => {
-    it("configures bash tool override, codemode tool override, header, editor, and thinking renderer", () => {
-      const { triggerStart } = setupHarness();
-      const { ctx, ui } = makeCtx(true);
+  // ADR 0029: presentation is resolved through `pi.registerToolRenderer()`,
+  // so the styling settings choose between our row and pi's native row inside
+  // one resolver, instead of re-registering the tool.
+  describe("tool renderer resolution", () => {
+    it("resolves bash to the Archimedes renderers when styling is on", () => {
+      const { renderers, triggerStart } = setupHarness();
+      const { ctx } = makeCtx(true);
 
       triggerStart(ctx);
 
-      // Bash tool override
-      expect(registerBashToolOverride).toHaveBeenCalledWith(expect.anything(), "/workspace/test-project");
+      expect(renderers.length).toBe(1);
+      const { result, nextCalls } = resolve(renderers[0], "bash");
+      expect(result).toMatchObject({
+        renderCall: renderBashCall,
+        renderResult: renderBashResult,
+      });
+      // `next()` is consulted and spread first, so a key the built-in
+      // definition declares besides our two — `renderShell` is the one that
+      // matters today — survives resolution instead of being dropped.
+      expect(nextCalls).toBe(1);
+      expect(result).toHaveProperty("native", true);
+    });
 
-      // Codemode tool override (fire-and-forget)
-      expect(registerCodemodeToolOverride).toHaveBeenCalledWith(expect.anything());
+    it("gives back pi's native bash row when bashToolStyling is off", () => {
+      vi.mocked(loadUIConfig).mockReturnValue({
+        ...DEFAULT_UI_CONFIG,
+        bashToolStyling: false,
+      });
+      const { renderers, triggerStart } = setupHarness();
+      const { ctx } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      const { result, nextCalls } = resolve(renderers[0], "bash");
+      expect(result).toBe(NATIVE);
+      expect(nextCalls).toBe(1);
+    });
+
+    it("gives back pi's native bash row when toolStyle is Native", () => {
+      vi.mocked(loadUIConfig).mockReturnValue({
+        ...DEFAULT_UI_CONFIG,
+        toolStyle: "Native",
+      });
+      const { renderers, triggerStart } = setupHarness();
+      const { ctx } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      expect(resolve(renderers[0], "bash")).toEqual({ result: NATIVE, nextCalls: 1 });
+    });
+
+    it("follows a settings change made between sessions", () => {
+      const { renderers, triggerStart } = setupHarness();
+      const { ctx } = makeCtx(true);
+
+      triggerStart(ctx);
+      expect(resolve(renderers[0], "bash").result).toMatchObject({ renderCall: renderBashCall });
+
+      // The user turns bash styling off in `/archimedes` and starts a session.
+      vi.mocked(loadUIConfig).mockReturnValue({
+        ...DEFAULT_UI_CONFIG,
+        bashToolStyling: false,
+      });
+      triggerStart(ctx);
+
+      expect(resolve(renderers[0], "bash")).toEqual({ result: NATIVE, nextCalls: 1 });
+    });
+
+    it("leaves every other tool to the remaining resolvers", () => {
+      const { renderers, triggerStart } = setupHarness();
+      const { ctx } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      for (const name of ["read", "edit", "write", "grep", "todo"]) {
+        expect(resolve(renderers[0], name)).toEqual({ result: NATIVE, nextCalls: 1 });
+      }
+    });
+
+    it("resolves codemode to the Archimedes renderers when styling is on", () => {
+      const { renderers, triggerStart } = setupHarness();
+      const { ctx } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      expect(resolve(renderers[0], "codemode").result).toMatchObject({
+        renderCall: renderCodemodeCall,
+        renderResult: renderCodemodeResult,
+        native: true,
+      });
+    });
+
+    it("gives back pi's own codemode row when codemodeToolStyling is off", () => {
+      vi.mocked(loadUIConfig).mockReturnValue({
+        ...DEFAULT_UI_CONFIG,
+        codemodeToolStyling: false,
+      });
+      const { renderers, triggerStart } = setupHarness();
+      const { ctx } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      expect(resolve(renderers[0], "codemode")).toEqual({ result: NATIVE, nextCalls: 1 });
+    });
+
+    it("registers the resolver once even across repeated session_start (/reload)", () => {
+      const { renderers, triggerStart } = setupHarness();
+      const { ctx } = makeCtx(true);
+
+      triggerStart(ctx);
+      triggerStart(ctx);
+
+      expect(renderers.length).toBe(1);
+    });
+  });
+
+  describe("session_start with interactive UI (hasUI: true)", () => {
+    it("configures the header, editor and thinking renderer", () => {
+      const { renderers, triggerStart } = setupHarness();
+      const { ctx, ui } = makeCtx(true);
+
+      triggerStart(ctx);
 
       // Header installation
       expect(ui.setHeader).toHaveBeenCalledTimes(1);
@@ -226,8 +357,11 @@ describe("packages/ui lifecycle and registration", () => {
       expect(renderHeader).toHaveBeenCalledWith(fakeTheme, expect.any(Object), 80, 21);
       expect(patchStartupListing).toHaveBeenCalledWith(fakeTui, expect.any(Object));
 
-      // Working visibility and Editor component
-      expect(ui.setWorkingVisible).toHaveBeenCalledWith(false); // spinFlag is true by default
+      // Working indicator and Editor component. The border spinner replaces
+      // pi's animated indicator, but pi's working row stays on screen: the row
+      // is asked for no frames rather than hidden wholesale.
+      expect(ui.setWorkingIndicator).toHaveBeenCalledWith({ frames: [] });
+      expect(ui.setWorkingVisible).not.toHaveBeenCalledWith(false);
       expect(ui.setEditorComponent).toHaveBeenCalledTimes(1);
       const editorFactory = ui.setEditorComponent.mock.calls[0]![0];
       const editorInstance = editorFactory(fakeTui, { borderColor: (s: string) => s } as EditorTheme, {} as KeybindingsManager);
@@ -251,31 +385,33 @@ describe("packages/ui lifecycle and registration", () => {
       patchNotify("patch skipped");
       expect(ui.notify).toHaveBeenCalledWith("patch skipped", "warning");
 
-      // Master gate (default toolStyle is Minimal): both overrides registered
-      expect(registerBashToolOverride).toHaveBeenCalled();
-      expect(registerCodemodeToolOverride).toHaveBeenCalled();
+      // Master gate (default toolStyle is Minimal): both rows are ours.
+      expect(resolve(renderers[0], "bash").result).toMatchObject({ renderCall: renderBashCall });
+      expect(resolve(renderers[0], "codemode").result).toMatchObject({
+        renderCall: renderCodemodeCall,
+      });
     });
 
-    it("skips the tool overrides entirely when toolStyle is Native", () => {
+    it("yields pi's native rows for every tool when toolStyle is Native", () => {
       vi.mocked(loadUIConfig).mockReturnValue({
         ...DEFAULT_UI_CONFIG,
         toolStyle: "Native",
       });
 
-      const { triggerStart } = setupHarness();
+      const { renderers, triggerStart } = setupHarness();
       const { ctx, ui } = makeCtx(true);
 
       triggerStart(ctx);
 
-      // Native = no archimedes tool styling: neither override is registered
-      // (pi's native rendering stands, no built-in-takeover notice).
-      expect(registerBashToolOverride).not.toHaveBeenCalled();
-      expect(registerCodemodeToolOverride).not.toHaveBeenCalled();
+      // Native = no archimedes tool styling: both rows go back through
+      // `next()`, so pi's own rendering stands and nothing is taken over.
+      expect(resolve(renderers[0], "bash")).toEqual({ result: NATIVE, nextCalls: 1 });
+      expect(resolve(renderers[0], "codemode")).toEqual({ result: NATIVE, nextCalls: 1 });
       // The rest of the UI still comes up.
       expect(ui.setHeader).toHaveBeenCalledTimes(1);
     });
 
-    it("respects editorSpinBorder: false by leaving workingVisible=true and not installing editor component", () => {
+    it("respects editorSpinBorder: false by leaving pi's indicator running and installing no editor component", () => {
       vi.mocked(loadUIConfig).mockReturnValue({
         ...DEFAULT_UI_CONFIG,
         editorSpinBorder: false,
@@ -286,22 +422,71 @@ describe("packages/ui lifecycle and registration", () => {
 
       triggerStart(ctx);
 
-      expect(ui.setWorkingVisible).toHaveBeenCalledWith(true);
+      // No border spinner, so pi's own animated spinner comes back (omitting the
+      // argument is how pi restores the default frames).
+      expect(ui.setWorkingIndicator).toHaveBeenCalledWith(undefined);
+      expect(ui.setWorkingVisible).not.toHaveBeenCalledWith(false);
       expect(ui.setEditorComponent).not.toHaveBeenCalled();
     });
 
-    it("skips bashToolOverride when bashToolStyling is false", () => {
+    it("puts the configured thinking label on hidden blocks through pi", () => {
+      vi.mocked(loadUIConfig).mockReturnValue({
+        ...DEFAULT_UI_CONFIG,
+        labelText: "Pondering...",
+      });
+
+      const { triggerStart } = setupHarness();
+      const { ctx, ui } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      // The hidden row is pi's own (`AssistantMessageComponent` reads the label
+      // pi was given), so the setting is handed to pi rather than rebuilt here.
+      expect(ui.setHiddenThinkingLabel).toHaveBeenCalledWith("Pondering...");
+    });
+
+    it("hands the hidden-thinking label back to pi when the setting is empty", () => {
+      vi.mocked(loadUIConfig).mockReturnValue({
+        ...DEFAULT_UI_CONFIG,
+        labelText: "   ",
+      });
+
+      const { triggerStart } = setupHarness();
+      const { ctx, ui } = makeCtx(true);
+
+      triggerStart(ctx);
+
+      expect(ui.setHiddenThinkingLabel).toHaveBeenCalledWith(undefined);
+    });
+
+    it("gives the working row and the thinking label back to pi on shutdown", () => {
+      const { triggerStart, triggerShutdown } = setupHarness();
+      const { ctx, ui } = makeCtx(true);
+
+      triggerStart(ctx);
+      triggerShutdown(ctx);
+
+      expect(ui.setWorkingIndicator).toHaveBeenLastCalledWith(undefined);
+      expect(ui.setHiddenThinkingLabel).toHaveBeenLastCalledWith(undefined);
+      expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
+    });
+
+    it("registers no bash tool and yields pi's native row when bashToolStyling is false", () => {
       vi.mocked(loadUIConfig).mockReturnValue({
         ...DEFAULT_UI_CONFIG,
         bashToolStyling: false,
       });
 
-      const { triggerStart } = setupHarness();
+      const { pi, renderers, triggerStart } = setupHarness();
       const { ctx } = makeCtx(true);
 
       triggerStart(ctx);
 
-      expect(registerBashToolOverride).not.toHaveBeenCalled();
+      // The take-over is gone: nothing re-registers `bash`, and the resolver
+      // hands the row back through `next()` — the first time this setting can
+      // genuinely give back pi's own rendering.
+      expect(pi.registerTool).not.toHaveBeenCalled();
+      expect(resolve(renderers[0], "bash")).toEqual({ result: NATIVE, nextCalls: 1 });
     });
 
     it("skips the codemode tool override when codemodeToolStyling is false", () => {
@@ -310,12 +495,15 @@ describe("packages/ui lifecycle and registration", () => {
         codemodeToolStyling: false,
       });
 
-      const { triggerStart } = setupHarness();
+      const { pi, renderers, triggerStart } = setupHarness();
       const { ctx } = makeCtx(true);
 
       triggerStart(ctx);
 
-      expect(registerCodemodeToolOverride).not.toHaveBeenCalled();
+      // Nothing re-registers `codemode`, so pi's built-in extension stays
+      // loaded; the resolver hands the row to pi's own renderer.
+      expect(pi.registerTool).not.toHaveBeenCalled();
+      expect(resolve(renderers[0], "codemode")).toEqual({ result: NATIVE, nextCalls: 1 });
     });
 
     it("does not accumulate message_end listeners on repeated session_start (simulating /reload)", () => {
@@ -355,13 +543,13 @@ describe("packages/ui lifecycle and registration", () => {
   });
 
   describe("session_start in non-interactive mode (hasUI: false)", () => {
-    it("still registers bashToolOverride but skips UI setup", () => {
-      const { triggerStart } = setupHarness();
+    it("registers no tool and skips UI setup", () => {
+      const { pi, triggerStart } = setupHarness();
       const { ctx, ui } = makeCtx(false);
 
       triggerStart(ctx);
 
-      expect(registerBashToolOverride).toHaveBeenCalledWith(expect.anything(), "/workspace/test-project");
+      expect(pi.registerTool).not.toHaveBeenCalled();
       expect(ui.setHeader).not.toHaveBeenCalled();
       expect(ui.setEditorComponent).not.toHaveBeenCalled();
       expect(patchThinkingRenderer).not.toHaveBeenCalled();
@@ -451,15 +639,13 @@ describe("packages/ui lifecycle and registration", () => {
 
       triggerStart(ctx);
 
-      // Verify startup
-      expect(ui.setWorkingVisible).toHaveBeenCalledWith(false);
+      // Verify startup: the border spinner took over pi's animated indicator.
+      expect(ui.setWorkingIndicator).toHaveBeenCalledWith({ frames: [] });
 
       // Now trigger shutdown
       triggerShutdown(ctx);
 
       expect(stopStartupListing).toHaveBeenCalledTimes(1);
-      expect(clearActiveBashIntervals).toHaveBeenCalledTimes(1);
-      expect(clearActiveCodemodeIntervals).toHaveBeenCalledTimes(1);
       expect(ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
       expect(ui.setEditorComponent).toHaveBeenLastCalledWith(undefined);
     });

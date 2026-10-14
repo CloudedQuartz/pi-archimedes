@@ -72,13 +72,13 @@ vi.mock("./migration.js", () => ({
 }));
 
 vi.mock("./bash/index.js", () => ({
-  registerBashToolOverride: vi.fn(),
-  clearActiveBashIntervals: vi.fn(),
+  renderBashCall: vi.fn(),
+  renderBashResult: vi.fn(),
 }));
 
 vi.mock("./codemode/index.js", () => ({
-  registerCodemodeToolOverride: vi.fn(async () => true),
-  clearActiveCodemodeIntervals: vi.fn(),
+  renderCodemodeCall: vi.fn(),
+  renderCodemodeResult: vi.fn(),
 }));
 
 import { VERSION } from "@earendil-works/pi-coding-agent";
@@ -120,6 +120,9 @@ function startSession(): { headerFactory: HeaderFactory } {
       setHeader,
       setEditorComponent: vi.fn(),
       setWorkingVisible: vi.fn(),
+      setWorkingIndicator: vi.fn(),
+      setHiddenThinkingLabel: vi.fn(),
+      notify: vi.fn(),
       theme: {} as Theme,
     },
     isIdle: vi.fn(() => true),
