@@ -27,6 +27,8 @@ New to Pi? Pi itself is a one-time global install and needs Node.js ≥ 22.19.0.
 - **Inline preview** — a preview of the attached images is sent and rendered in the TUI. Previews appear where your terminal renders inline images; on a terminal that can't show them, the image is still attached — only the preview falls back.
 - **Same key, wider scope** — the paste key is Pi's own (`app.clipboard.pasteImage`), and taking it means covering everything it did, so with no image on the clipboard the handler falls back to what Pi does: copied **file paths** are inserted at the cursor with Pi's own spacing, and otherwise the clipboard **text** is inserted. One keypress produces one outcome, in that order: image, then paths, then text. Nothing on the clipboard leaves the draft untouched and says nothing, exactly as Pi does.
 - **Size guard** — 20 MiB **per image**, rejected with a clear message before it wastes context or hangs the submit.
+- **Bounded reads** — every clipboard read has a deadline (the same budget Pi gives its own clipboard commands), so a helper that stops answering — an X11/Wayland session that went unresponsive, say — reports `Clipboard paste failed: … timed out` instead of silently taking the paste key out of service for the rest of the session.
+- **Text stays text** — clipboard text is inserted as it is, with one exception: terminal escape bytes are dropped. The insert an extension has is a bracketed paste, so an escape byte coming from the clipboard would otherwise close the paste mid-string and swallow everything behind it.
 - **Model side** — the session's model must support images for the attachment to be usable.
 
 ## Paste shortcuts
