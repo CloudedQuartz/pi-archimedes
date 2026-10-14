@@ -37,7 +37,7 @@ A frame-bounded screen allocates the height itself, so anything that pads itself
 
 - The splash header "is exactly its content on both screens" (`renderHeader`, `packages/ui/src/startup/index.ts`). Sizing it by the screen is what previously pushed pi's own startup listing a screen down on regular terminal, and on fullscreen it would have taken the viewport.
 - Because nothing is measured per screen, the header factory takes no screen reading at all (`packages/ui/src/index.ts`, `headerFactory`). That matters because pi re-invokes the header factory on a new session, `/reload` or any `setHeader()`, and **never** on a `tuiMode` switch — a per-screen measurement taken there would be the stale one the header kept until the next replacement.
-- Tool rows carry the host's numbers, not their own: `packages/ui/src/index.ts` and the `packages/diff` renderers apply `ctx.outputPad` where they draw their own shell, and `packages/ui`'s renderers read `ctx.durationMs` instead of running local timers, so row width and the "Took" line come from pi (ADR 0029).
+- Tool rows carry the host's numbers where the host has them: the `packages/diff` edit renderer applies `ctx.outputPad` where it draws its own shell (`packages/ui`'s thinking patch does the same for thinking blocks; the `bash`/`codemode` rows draw no padded shell of their own), and the bash/codemode result rows hand `ctx.durationMs` to `toolRowDuration()`, which lets the duration pi recorded win once the row settles — the row's own clock, and the 1s interval that repaints it, only speak while the row is still in flight, so the settled "Took" line is pi's number (ADR 0029).
 
 ## What must never be stored
 

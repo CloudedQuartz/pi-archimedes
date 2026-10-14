@@ -184,12 +184,12 @@ Pi 1.2.0 validates `~/.pi/agent/themes/*.json` at startup against `theme.schema.
 | Component | npm package | What it adds |
 |-----------|-------------|--------------|
 | **Core** | [`@pi-archimedes/core`](https://www.npmjs.com/package/@pi-archimedes/core) | Shared plumbing — `pi.events` channel vocabulary, overlay chrome, settings I/O, tool-row rendering |
-| **UI** | [`@pi-archimedes/ui`](https://www.npmjs.com/package/@pi-archimedes/ui) | Framed editor with a working spinner, bash/edit/write tool-row styling, thinking collapse, opt-in startup splash |
+| **UI** | [`@pi-archimedes/ui`](https://www.npmjs.com/package/@pi-archimedes/ui) | Framed editor with a working spinner, bash + codemode tool-row styling, thinking collapse, opt-in startup splash |
 | **Subagent** | [`@pi-archimedes/subagent`](https://www.npmjs.com/package/@pi-archimedes/subagent) | Live subagent dispatch, custom agent definitions; `/agents` editor with the suite |
 | **Todo** | [`@pi-archimedes/todo`](https://www.npmjs.com/package/@pi-archimedes/todo) | Multi-column todo board with subagent columns and auto-clear |
 | **Ask** | [`@pi-archimedes/ask`](https://www.npmjs.com/package/@pi-archimedes/ask) | Structured questions — including subagent questions relayed into your terminal |
 | **Sudo** | [`@pi-archimedes/sudo`](https://www.npmjs.com/package/@pi-archimedes/sudo) | `sudo_exec` with masked password prompt and interactive-sudo guard |
-| **Diff** | [`@pi-archimedes/diff`](https://www.npmjs.com/package/@pi-archimedes/diff) | Syntax-highlighted side-by-side and unified diffs with word-level highlights |
+| **Diff** | [`@pi-archimedes/diff`](https://www.npmjs.com/package/@pi-archimedes/diff) | Syntax-highlighted side-by-side and unified diffs with word-level highlights, drawn into pi's `edit`/`write` tool rows |
 | **Footer** | [`@pi-archimedes/footer`](https://www.npmjs.com/package/@pi-archimedes/footer) | Branch, model, context usage, and token/cost status bar |
 | **Image Paste** | [`@pi-archimedes/image-paste`](https://www.npmjs.com/package/@pi-archimedes/image-paste) | Clipboard image paste with inline previews |
 | **Notify** | [`@pi-archimedes/notify`](https://www.npmjs.com/package/@pi-archimedes/notify) | Delayed desktop notifications with input cancellation |
