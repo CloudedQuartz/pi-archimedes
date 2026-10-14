@@ -69,8 +69,10 @@ Then run `/reload` in your session (or start a new one) to pick it up — that r
 `/login` signs you into a supported provider (subscription or API key) and `/model` selects a model from it. Model access comes through the providers you configure in Pi — Pi's [provider docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md) list the supported ones, and Archimedes doesn't ship a model of its own. For the broader first run, Pi's [quickstart](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/quickstart.md) is worth a read.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/danielcherubini/pi-archimedes/main/docs/images/splash-screen.png" width="600" alt="pi-archimedes splash screen">
+  <img src="https://raw.githubusercontent.com/danielcherubini/pi-archimedes/main/docs/images/splash-screen.png" width="600" alt="The opt-in Archimedes startup splash: the ASCII logo above pi's own startup listing">
 </p>
+
+<p align="center"><sub>The startup splash is opt-in — turn it on with <code>/archimedes</code> → Startup Splash. Out of the box Pi's own startup screen is left in place.</sub></p>
 
 ---
 
@@ -169,7 +171,8 @@ Every component keeps its own namespace under `~/.pi/agent/settings.json`, which
 
 | Component | npm package | What it adds |
 |-----------|-------------|--------------|
-| **Core** | [`@pi-archimedes/core`](https://www.npmjs.com/package/@pi-archimedes/core) | Shared event-channel vocabulary (`pi.events`), splash screen, framed editor, working spinner, thinking blocks |
+| **Core** | [`@pi-archimedes/core`](https://www.npmjs.com/package/@pi-archimedes/core) | Shared plumbing — `pi.events` channel vocabulary, overlay chrome, settings I/O, tool-row rendering |
+| **UI** | [`@pi-archimedes/ui`](https://www.npmjs.com/package/@pi-archimedes/ui) | Framed editor with a working spinner, bash/edit/write tool-row styling, thinking collapse, opt-in startup splash |
 | **Subagent** | [`@pi-archimedes/subagent`](https://www.npmjs.com/package/@pi-archimedes/subagent) | Live subagent dispatch, custom agent definitions; `/agents` editor with the suite |
 | **Todo** | [`@pi-archimedes/todo`](https://www.npmjs.com/package/@pi-archimedes/todo) | Multi-column todo board with subagent columns and auto-clear |
 | **Ask** | [`@pi-archimedes/ask`](https://www.npmjs.com/package/@pi-archimedes/ask) | Structured questions — including subagent questions relayed into your terminal |
@@ -178,6 +181,7 @@ Every component keeps its own namespace under `~/.pi/agent/settings.json`, which
 | **Footer** | [`@pi-archimedes/footer`](https://www.npmjs.com/package/@pi-archimedes/footer) | Branch, model, context usage, and token/cost status bar |
 | **Image Paste** | [`@pi-archimedes/image-paste`](https://www.npmjs.com/package/@pi-archimedes/image-paste) | Clipboard image paste with inline previews |
 | **Notify** | [`@pi-archimedes/notify`](https://www.npmjs.com/package/@pi-archimedes/notify) | Delayed desktop notifications with input cancellation |
+| **Web** | [`@pi-archimedes/web`](https://www.npmjs.com/package/@pi-archimedes/web) | `web_search`, `fetch_content` and `get_search_content` with multi-provider routing |
 | **Session Name** | [`@pi-archimedes/session-name`](https://www.npmjs.com/package/@pi-archimedes/session-name) | Automatic session titles |
 
 The full suite is the supported connected setup — the integrations above (subagent costs in the footer, subagent columns on the todo board, subagent questions in the terminal) light up when the relevant components are loaded together.
