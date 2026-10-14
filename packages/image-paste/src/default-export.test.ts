@@ -61,13 +61,32 @@ describe("image-paste default export — native-paste restore call site", () => 
 		vi.mocked(runNativePasteRestore).mockClear();
 	});
 
-	it("registers its session_start handler at the top level of the factory (never nested)", () => {
+	it("registers its session_start handler at the top level of the factory (never nested)", async () => {
 		const on = vi.fn();
 		defaultExport({ on, registerShortcut: vi.fn(), registerMessageRenderer: vi.fn() } as any);
 
 		// Registered during the factory call itself — before any session ran.
-		const startRegistrations = on.mock.calls.filter((c: Array<unknown>) => c[0] === "session_start");
-		expect(startRegistrations.length).toBeGreaterThanOrEqual(1);
+		const countStarts = () =>
+			on.mock.calls.filter((c: Array<unknown>) => c[0] === "session_start").length;
+		const registeredByFactory = countStarts();
+		expect(registeredByFactory).toBeGreaterThanOrEqual(1);
+
+		// …and running sessions must not register MORE of them. A `pi.on`
+		// nested inside a session_start handler adds one handler per session on
+		// every /reload (AGENTS.md), which a plain "was it registered" check
+		// cannot see — the nested version registers exactly one at factory time
+		// too. This is the half of the claim that has teeth.
+		const startHandler = on.mock.calls.find((c: Array<unknown>) => c[0] === "session_start")?.[1] as (
+			event: unknown,
+			ctx: unknown,
+		) => unknown;
+		await startHandler({}, { hasUI: true });
+		await startHandler({}, { hasUI: true });
+		expect(countStarts(), "a session_start handler registered another one (nested)").toBe(
+			registeredByFactory,
+		);
+		// One call per session is the other half of the same promise.
+		expect(runNativePasteRestore).toHaveBeenCalledTimes(2);
 	});
 
 	it("runs the restore once per session_start with that session's ctx", async () => {

@@ -1198,6 +1198,45 @@ describe("runNativePasteRestore — the caller surfaces the outcome (once per pr
     expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(foreign);
   });
 
+  it("a reload that re-fires session_start does NOT recurse: the second pass reports already-restored and never reloads again", async () => {
+    // pi's own reload path: `AgentSession.reload()` emits `session_start`
+    // (`reason: "reload"`, pi 1.2.0 dist/core/agent-session.js:2998) and
+    // interactive mode calls `keybindings.reload()` only after it returns
+    // (dist/modes/interactive/interactive-mode.js:5406). So a restore that
+    // reloads re-enters this call — and must terminate. It does, because the
+    // first pass leaves `{}`, which is reported without a rewrite.
+    askForNativePaste();
+    writeKeybindings(ARTEFACT_POST_123);
+
+    const reloads: number[] = [];
+    const passes: string[] = [];
+    const runPass = async (depth: number): Promise<void> => {
+      const notify = vi.fn();
+      const ctx = {
+        mode: "tui",
+        hasUI: true,
+        ui: { confirm: vi.fn(), notify },
+        reload: async () => {
+          reloads.push(depth);
+          await runPass(depth + 1);
+        },
+      } as unknown as ExtensionContext;
+
+      const outcome = await runNativePasteRestore(ctx);
+      passes.push(`${outcome.kind}:${notify.mock.calls.length}`);
+    };
+
+    await runPass(0);
+
+    // Exactly one reload, exactly two passes, one rewrite, no notify on the
+    // second pass (the inner pass reports first — the reload is awaited inside
+    // the outer call). A restore that rewrote `{}` instead of recognising it
+    // would reload forever and never reach this assertion.
+    expect(reloads).toEqual([0]);
+    expect(passes).toEqual(["already-restored:0", "restored:1"]);
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe("{}");
+  });
+
   it("the guard lives on globalThis under the mandated symbol key", async () => {
     askForNativePaste();
     writeKeybindings(`{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`);
