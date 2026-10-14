@@ -22,22 +22,34 @@ import { fileURLToPath } from "node:url";
 //      directory must agree verbatim between the two READMEs — that is what
 //      catches a one-sided edit, which is the exact shape of the drift;
 //   2. a list of phrasings the shipped code makes false must be absent from
-//      both — that catches the pair drifting together away from the code, which
-//      a pure A-vs-B comparison cannot see.
+//      every page users read about this file — that catches the pair drifting
+//      together away from the code, which a pure A-vs-B comparison cannot see.
 //
 // Deliberate limits: it compares the READMEs against each other and against the
 // stale-phrasing list, NOT against `keybinding-offer.ts`. The code side is
 // pinned where it belongs — `packages/image-paste/src/keybinding-offer.test.ts`
 // asserts the snippet byte-for-byte ("the README quotes this line verbatim") and
 // every user-facing warning string. Nothing here reads `$HOME`, a package
-// `node_modules`, or the network, and the whole file costs two `readFileSync`
-// calls, so it is as fast as the discipline guards in `packages/core/src`.
+// `node_modules`, or the network: the imports are `node:fs`, `node:path` and
+// `node:url`, and the whole file is a handful of reads of three small Markdown
+// files (measured: ~10ms for five tests, and it passes from an unrelated cwd
+// with `env -i` and a nonexistent `$HOME`).
 
 /** Repo root, resolved from this file (`meta/src` → repo root), never `$HOME`. */
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 const ROOT_README = "README.md";
 const META_README = join("meta", "README.md");
+/**
+ * The package's own page. It is NOT part of the A-vs-B copy comparison (it
+ * legitimately says more than the suite pages), but it is the page a standalone
+ * `pi install @pi-archimedes/image-paste` user reads, so a claim the code makes
+ * false is just as wrong here — which is how "a message naming the line to
+ * delete" survived in it after the warning stopped saying that (PR #129 review).
+ */
+const PACKAGE_README = join("packages", "image-paste", "README.md");
+/** The living feature doc — same audience, same rule. */
+const FEATURE_DOC = join("docs", "features", "first-run-keybinding-offer.md");
 
 /**
  * Words that mean "this line is about the file the suite writes into the user's
@@ -62,36 +74,46 @@ const KEYBINDING_VOCABULARY = [
  *   produces.
  * * "only when the file holds nothing else" — the accept-set is not "nothing
  *   else"; it is the suite's own artefact, and its own `$schema` counts as ours.
- * * "naming the one line to delete" / "names the line to delete" / "its wording
- *   assumes the first" — the refuse warning used to order every refused file to
- *   delete an `app.clipboard.pasteImage` entry. Issue #127: four of the five
- *   refusals hold no such entry, so the warning now branches and only says it
- *   when there is something to delete.
- *
- * Phrased as plain substrings, because the point is that these exact words read
- * as a promise the code does not keep.
+ * * "naming the … line to delete" (any tense, with or without "one", with or
+ *   without "you should") — the refuse warning used to order every refused file
+ *   to delete an `app.clipboard.pasteImage` entry. Issue #127: most refusals hold
+ *   no such entry, so the warning now branches and only names an entry when the
+ *   file holds one. This is a PATTERN and not a literal string on purpose: the
+ *   two literals this list carried ("naming the one line to delete", "names the
+ *   line to delete") both missed "a message naming the line to delete", which is
+ *   why that sentence was still living in `packages/image-paste/README.md` when
+ *   PR #129 was reviewed. The test below keeps the pattern honest in both
+ *   directions — it must catch the rewordings and must not catch the wording
+ *   that replaced them.
+ * * "its wording assumes the first" — the warning no longer has one wording for
+ *   every refusal.
  */
-const STALE_PHRASES: ReadonlyArray<{ phrase: string; why: string }> = [
+const STALE_PATTERNS: ReadonlyArray<{ pattern: RegExp; why: string }> = [
   {
-    phrase: "single `app.clipboard.pasteImage`",
+    pattern: /single `app\.clipboard\.pasteImage`/,
     why: "the suite writes the unbinding plus its own `$schema` line, not a single entry",
   },
   {
-    phrase: "only when the file holds nothing else",
+    pattern: /only when the file holds nothing else/,
     why: "the accept-set is the suite's own artefact, and its own `$schema` counts as ours",
   },
   {
-    phrase: "naming the one line to delete",
+    pattern:
+      /nam\w+\s+the\s+(one\s+)?line\s+(that\s+)?(you\s+(should|need\s+to|can)\s+)?(to\s+)?delete/i,
     why: "the refuse warning only names an entry when the refused file actually holds one (issue #127)",
   },
   {
-    phrase: "names the line to delete",
-    why: "same claim in another tense — four of the five refusals hold no entry to name",
-  },
-  {
-    phrase: "its wording assumes the first",
+    pattern: /its wording assumes the first/i,
     why: "the warning no longer has one wording for every refusal",
   },
+];
+
+/** Every page a user reads about this file — all of them carry the same truth. */
+const SCANNED_PAGES = [
+  { label: "README.md", relPath: ROOT_README },
+  { label: "meta/README.md", relPath: META_README },
+  { label: PACKAGE_README, relPath: PACKAGE_README },
+  { label: FEATURE_DOC, relPath: FEATURE_DOC },
 ];
 
 function readme(relPath: string): string {
@@ -127,16 +149,48 @@ describe("README agreement — the npm page and the repo page (issue #128)", () 
     expect(keybindingLines(META_README)).toEqual(keybindingLines(ROOT_README));
   });
 
-  it("neither README carries a phrasing the shipped code makes false", () => {
-    for (const { label, relPath } of BOTH_READMES) {
+  it("no page a user reads carries a phrasing the shipped code makes false", () => {
+    for (const { label, relPath } of SCANNED_PAGES) {
       const text = readme(relPath);
-      for (const { phrase, why } of STALE_PHRASES) {
-        // A boolean, so a failure prints the phrase rather than both whole
-        // READMEs as an expected/received diff.
-        expect(text.includes(phrase), `${label} must not claim "${phrase}" — ${why}`).toBe(
-          false,
-        );
+      for (const { pattern, why } of STALE_PATTERNS) {
+        // A boolean, so a failure prints the phrase rather than the whole page
+        // as an expected/received diff.
+        expect(
+          pattern.test(text),
+          `${label} must not claim ${pattern} — ${why}`,
+        ).toBe(false);
       }
+    }
+  });
+
+  it("the stale-claim patterns catch rewordings, and leave the honest wording alone", () => {
+    // The failure mode of a substring ban list is a synonym. These are the
+    // rewordings of the #127 claim that the literal list let through, plus the
+    // shape the guard has to keep rejecting.
+    const REWORDINGS = [
+      "anything else is left alone with a message naming the line to delete",
+      "the warning names the one line to delete",
+      "the warning names the line you should delete",
+      "you get a message naming the one line that you need to delete",
+    ];
+    for (const text of REWORDINGS) {
+      expect(
+        STALE_PATTERNS.some(({ pattern }) => pattern.test(text)),
+        `must be caught: "${text}"`,
+      ).toBe(true);
+    }
+    // And the wording that replaced them must not trip the list, or the guard
+    // becomes the reason nobody edits the sentence.
+    const HONEST = [
+      "naming the entry to remove when the file really holds one, and otherwise saying there is nothing of ours to remove",
+      "the warning names the file in every case, and the entry only where one is actually in there",
+      "a file of foreign keys, or a `$schema`-only file, is told there is nothing of ours to remove",
+    ];
+    for (const text of HONEST) {
+      expect(
+        STALE_PATTERNS.some(({ pattern }) => pattern.test(text)),
+        `false positive: "${text}"`,
+      ).toBe(false);
     }
   });
 
