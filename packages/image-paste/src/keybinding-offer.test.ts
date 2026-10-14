@@ -91,7 +91,13 @@ function readFlag(): boolean {
 }
 
 function cleanupArtifacts(): void {
-  for (const p of [settingsPath(), settingsPath() + ".tmp", keybindingsPath(), tmpPath()]) {
+  for (const p of [
+    settingsPath(),
+    settingsPath() + ".tmp",
+    keybindingsPath(),
+    `${keybindingsPath()}.tmp`,
+    tmpPath(),
+  ]) {
     try {
       fs.rmSync(p, { recursive: true, force: true });
     } catch {
@@ -816,16 +822,24 @@ describe("restoreNativePaste — the accept-set (only our own artefact is rewrit
 
   it("a write that fails yields 'failed' with the path and the manual edit, never throws, and leaves nothing behind", () => {
     writeKeybindings(ARTEFACT_POST_123);
-    // Read-only agent dir: the tmp write fails with EACCES, so the rename never
-    // happens and the live file must survive.
-    fs.chmodSync(tempDir, 0o555);
+    // Deterministic write failure, for every uid: a DIRECTORY sits where the
+    // atomic writer puts its temp file, so `writeFileSync(tmp)` throws EISDIR,
+    // the rename is never attempted, and the live file must survive.
+    //
+    // This replaced `chmodSync(tempDir, 0o555)`, which is uid-dependent: a root
+    // process ignores the mode bit (CAP_DAC_OVERRIDE), so under root the write
+    // SUCCEEDED and this test failed against correct code with
+    // `expected status "failed", got "restored"` — reproduced by neutralising
+    // the chmod to 0o755 and watching exactly that failure.
+    const blockedTmp = `${keybindingsPath()}.tmp`;
+    fs.mkdirSync(blockedTmp, { recursive: true });
     let status: RestoreNativePasteStatus | undefined;
     try {
       expect(() => {
         status = restoreNativePaste();
       }).not.toThrow();
     } finally {
-      fs.chmodSync(tempDir, 0o755);
+      fs.rmSync(blockedTmp, { recursive: true, force: true });
     }
 
     const failed = status!;
@@ -1067,12 +1081,16 @@ describe("runNativePasteRestore — the caller surfaces the outcome (once per pr
     askForNativePaste();
     writeKeybindings(ARTEFACT_POST_123);
     const { ctx, notify } = makeCtx("tui");
-    fs.chmodSync(tempDir, 0o555);
+    // Same uid-independent injection as the `restoreNativePaste` case: a
+    // directory at the temp path makes the temp write fail for any uid, where
+    // `chmod 0o555` is simply ignored by root.
+    const blockedTmp = `${keybindingsPath()}.tmp`;
+    fs.mkdirSync(blockedTmp, { recursive: true });
     let outcome: NativePasteRestoreOutcome | undefined;
     try {
       outcome = await runNativePasteRestore(ctx);
     } finally {
-      fs.chmodSync(tempDir, 0o755);
+      fs.rmSync(blockedTmp, { recursive: true, force: true });
     }
 
     expect(outcome!.kind).toBe("failed");
