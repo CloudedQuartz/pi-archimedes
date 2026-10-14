@@ -435,6 +435,29 @@ describe("search", () => {
     expect(h.saves).toBe(0);
   });
 
+  it("leaves the cursor where it was when backspace has nothing to delete", async () => {
+    // An armed-but-empty query: main did nothing at all here. Rebuilding the
+    // list for a query that did not change reset the cursor to the first row,
+    // so a stray backspace jumped the user back to the top of the panel.
+    const items = await realItems();
+    const h = createHarness(items);
+    to(h, 3);
+    h.press("/");
+    const cursorRow = (): string =>
+      (h
+        .render()
+        .map((l) => stripTerminalSequences(l))
+        .find((l) => /[>→]/.test(l)) ?? "").replace(/.*[>→]\s*/, "");
+    expect(cursorRow()).toContain(items[3]!.label);
+    h.press(KEY.backspace);
+    expect(cursorRow()).toContain(items[3]!.label);
+    expect(h.drawn()).toContain("Search:"); // still armed
+    // A backspace that does delete still re-filters, from the top.
+    h.type("spin");
+    h.press(KEY.backspace);
+    expect(h.row("Search:")).toBe("Search: spi");
+  });
+
   it("edits the query with backspace", async () => {
     const items = await realItems();
     const h = createHarness(items);

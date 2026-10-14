@@ -350,8 +350,13 @@ export function createSettingsManager(opts: SettingsManagerOptions): {
     }
     if (searchArmed) {
       if (kb.matches(data, "tui.editor.deleteCharBackward")) {
+        const before = searchInput.getValue();
         searchInput.handleInput(data);
-        refilter();
+        // Only a query that actually changed is worth rebuilding for: a backspace
+        // against the empty query must leave the cursor where it is (rebuilding
+        // resets it to the first row). Every other edit path changes the query,
+        // so the reset-on-narrowing still happens.
+        if (searchInput.getValue() !== before) refilter();
         return;
       }
       // Decoded first, so the query is typeable on a CSI-u terminal too (a bare
