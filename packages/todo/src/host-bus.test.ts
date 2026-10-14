@@ -154,6 +154,39 @@ describe("todo receives subagent todos over the host bus", () => {
     expect(bus.listenerCount(TODOS_UPDATE)).toBe(0);
     expect(bus.listenerCount(TODOS_CLEAR)).toBe(0);
   });
+
+  /**
+   * Three session generations on one handle, the pessimistic shape: pi gives
+   * each session its own bus today (a fresh resource loader per session), but a
+   * `session_start` also fires twice per replacement in RPC mode, and a dropped
+   * unsubscribe is invisible until something accumulates. Each generation gets a
+   * fresh `registerTodo` (pi re-runs the factory), two `session_start`s, and one
+   * emit — and must see exactly one delivery, with nothing left alive at the end.
+   */
+  it("three generations on one bus: one delivery each, nothing left subscribed", async () => {
+    const bus = fakeBus();
+    for (let generation = 1; generation <= 3; generation += 1) {
+      const todo = fakePi(bus);
+      registerTodo(todo.pi);
+      await todo.fire("session_start");
+      await todo.fire("session_start");
+      expect(bus.listenerCount(TODOS_UPDATE)).toBe(1);
+      expect(bus.listenerCount(TODOS_CLEAR)).toBe(1);
+
+      const seen: unknown[] = [];
+      const unsub = bus.on(TODOS_UPDATE, (p) => seen.push(p));
+      bus.emit(TODOS_UPDATE, {
+        source: `subagent:gen${generation}`,
+        todos: [{ content: `gen${generation}`, status: "pending" }],
+      });
+      expect(seen).toHaveLength(1);
+      unsub();
+
+      await todo.fire("session_shutdown", { type: "session_shutdown", reason: "new" });
+      expect(bus.listenerCount(TODOS_UPDATE)).toBe(0);
+      expect(bus.listenerCount(TODOS_CLEAR)).toBe(0);
+    }
+  });
 });
 
 describe("todo's own writes reach the bus a subscriber already holds", () => {
