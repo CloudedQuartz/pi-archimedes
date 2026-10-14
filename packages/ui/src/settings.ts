@@ -70,16 +70,25 @@ export function getUISettingsItems(config: UIConfig): SettingItem[] {
       currentValue: config.labelColor,
     },
     {
+      id: "startupSplash",
+      label: "Startup Splash",
+      description:
+        "Archimedes startup splash animation (Off = pi's own startup screen, which is the default)",
+      currentValue: config.startupSplash ? "On" : "Off",
+      values: ["On", "Off"],
+    },
+    {
       id: "animationStyle",
       label: "Logo Animation",
-      description: "Splashscreen logo reveal style",
+      description: "Splashscreen logo reveal style (applies when Startup Splash is On)",
       currentValue: config.animationStyle,
       values: [...ANIMATION_STYLES],
     },
     {
       id: "colorfulLogo",
       label: "Colorful Logo",
-      description: "Use pi's brand colors for the splash logo",
+      description:
+        "Use pi's brand colors for the splash logo (applies when Startup Splash is On)",
       currentValue: config.colorfulLogo ? "On" : "Off",
       values: ["On", "Off"],
     },
