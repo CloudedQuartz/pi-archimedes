@@ -17,7 +17,6 @@ import {
   revealStartupListing,
   stopStartupListing,
   modelScopeSection,
-  CONTENT_ONLY_HEIGHT,
   type ListingRef,
 } from "./startup/index.js";
 import type { ParsedSection } from "./startup/sections.js";
@@ -34,7 +33,6 @@ import {
   type UIConfig,
   type CoreConfig,
 } from "./config.js";
-import { screenCapabilities, screenMode } from "@pi-archimedes/core/screen-mode";
 import { reportPiSupport } from "@pi-archimedes/core/pi-support";
 import { getUISettingsItems } from "./settings.js";
 import { migrateCoreToUIConfig, migrateCompactThinkingToStyle, migrateRemovedToolPatch } from "./migration.js";
@@ -216,36 +214,29 @@ export function registerUI(pi: ExtensionAPI): void {
         };
         const ref = uiRef;
         const headerFactory = (tui: TUI, theme: Theme): Component & { dispose(): void } => {
-          // Screen mode is asked of the renderer we were just handed, never
-          // cached in a module or a field (ADR 0027). Be exact about what that
-          // buys: pi calls this factory again whenever the header is replaced —
-          // a new session, `/reload` (which goes through `resetExtensionUI()`),
-          // or any `setHeader()`. It does *not* call it for a `tuiMode` switch:
-          // `switchTuiMode()` stops the old TUI, builds a new one and re-mounts
-          // the components it already has, and `customHeader` is only ever
-          // assigned in `setExtensionHeader()`. So the sizing decided here is
-          // the sizing that header keeps until the next replacement.
-          const caps = screenCapabilities(screenMode(tui));
+          // Nothing here is sized by the screen: pi calls this factory again
+          // whenever the header is replaced — a new session, `/reload` (which
+          // goes through `resetExtensionUI()`), or any `setHeader()` — and never
+          // for a `tuiMode` switch (`switchTuiMode()` re-mounts the components it
+          // already has), so a per-screen measurement taken here would be the
+          // measurement the header kept until the next replacement. The header
+          // does not need one: it renders its own content on either screen
+          // (`renderHeader`), which is both what keeps a frame-bounded viewport
+          // usable (ADR 0027) and what leaves pi's listing directly below it.
           const comp: Component & { dispose(): void } = {
             // pi invalidates the component tree on every theme change
             // (`onThemeChange()` → `ui.invalidate()`) and from the theme file
             // watcher, and the splash's cached lines carry the theme's colours
             // — so this is the hook that keeps a finished splash from rendering
             // yesterday's palette for the rest of the session. The cache key is
-            // the size it was drawn at, which a theme switch leaves alone.
+            // the width it was drawn at, which a theme switch leaves alone.
             // Only the memo goes: this is a repaint, not an animation restart.
             invalidate(): void {
               delete ref.cachedLines;
               delete ref.cachedWidth;
-              delete ref.cachedHeight;
             },
             render(width: number): string[] {
-              // Regular screen: sized to the terminal the splash scrolls
-              // through. Frame-bounded screen: the viewport owns the height, so
-              // the header gets its content and nothing more — padded to the
-              // terminal it would be the whole viewport, editor excluded.
-              const height = caps.frameBounded ? CONTENT_ONLY_HEIGHT : tui.terminal.rows - 3;
-              return renderHeader(theme, ref, width, height);
+              return renderHeader(theme, ref, width);
             },
             // pi disposes the header it is replacing before it builds the next
             // one (`setExtensionHeader()` disposes, then calls the factory), so

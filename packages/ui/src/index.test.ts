@@ -354,7 +354,7 @@ describe("packages/ui lifecycle and registration", () => {
       const comp = headerFactory(fakeTui, fakeTheme);
       expect(typeof comp.render).toBe("function");
       comp.render(80);
-      expect(renderHeader).toHaveBeenCalledWith(fakeTheme, expect.any(Object), 80, 21);
+      expect(renderHeader).toHaveBeenCalledWith(fakeTheme, expect.any(Object), 80);
       expect(patchStartupListing).toHaveBeenCalledWith(fakeTui, expect.any(Object));
 
       // Working indicator and Editor component. The border spinner replaces

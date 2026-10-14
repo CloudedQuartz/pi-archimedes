@@ -65,10 +65,25 @@ describe("formatColumns", () => {
 		expect(result.some(line => line.includes("[Themes]"))).toBe(true);
 	});
 
-	it("adds blank line after Version section", () => {
+	it("separates two sections with one blank row, the way pi's Spacer(1) does", () => {
+		const sections = [
+			{ name: "Version" as const, items: ["1.0.0"] },
+			{ name: "Models" as const, items: ["gpt-5"] },
+		];
+		expect(formatColumns(sections, mockTheme, 80, mockRef)).toEqual([
+			"[Version]",
+			"  1.0.0",
+			"",
+			"[Models]",
+			"  gpt-5",
+		]);
+	});
+
+	it("adds no blank row after the last section: pi supplies the gap below the header", () => {
+		// pi brackets the header container with a Spacer and opens its resource
+		// listing with another, so a trailing blank here is a double gap.
 		const sections = [{ name: "Version" as const, items: ["1.0.0"] }];
-		const result = formatColumns(sections, mockTheme, 80, mockRef);
-		expect(result).toContain("");
+		expect(formatColumns(sections, mockTheme, 80, mockRef)).toEqual(["[Version]", "  1.0.0"]);
 	});
 
 	it("wraps items to new lines when exceeding width", () => {
