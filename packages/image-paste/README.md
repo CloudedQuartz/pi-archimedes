@@ -40,7 +40,7 @@ New to Pi? Pi itself is a one-time global install and needs Node.js ≥ 22.19.0.
 | Windows | `Alt+V`, `Ctrl+Alt+V` |
 
 > [!NOTE]
-> **Pi's built-in `app.clipboard.pasteImage` owns the table's first shortcut on every platform** — `Ctrl+V` on Linux/macOS, `Alt+V` on Windows — so the two conflict everywhere. When both fire on the shared key, the built-in throws warning banners (seen on Linux). Clear the built-in binding in `~/.pi/agent/keybindings.json` so the preview-enhanced handler takes the paste:
+> **Pi's built-in `app.clipboard.pasteImage` owns the table's first shortcut on every platform** — `Ctrl+V` on Linux/macOS, `Alt+V` on Windows — so the two collide everywhere. They do **not** both run: an extension shortcut wins over a built-in that is not on Pi's reserved list, so Pi reports one `[Extension issues]` line (`Extension shortcut conflict: 'ctrl+v' is built-in shortcut for app.clipboard.pasteImage and <ext>. Using <ext>`) and its own action never fires — measured on Pi 1.2.0, one `Ctrl+V`, one insertion, this extension's. Clear the built-in binding in `~/.pi/agent/keybindings.json` so the preview-enhanced handler takes the paste cleanly:
 >
 > ```json
 > { "$schema": "https://pi.dev/schemas/keybindings.schema.json", "app.clipboard.pasteImage": [] }
@@ -48,7 +48,9 @@ New to Pi? Pi itself is a one-time global install and needs Node.js ≥ 22.19.0.
 >
 > The `$schema` line is optional — Pi skips that key when it loads the file — but it lets an editor validate the file against Pi's published keybindings schema, and it is exactly what the first-run offer below writes.
 >
-> **First-run offer (once ever, all platforms)** — when installed via the suite, on the first TUI session with image-paste enabled, if `~/.pi/agent/keybindings.json` doesn't exist yet, the suite offers to create it with exactly the snippet above: accepting creates the file and attempts an automatic reload where the runtime supports it (on current Pi 0.85.1 you're notified to run `/reload`, and the cleared binding applies once it runs), declining or cancelling (Esc) never asks again — re-open by deleting `archimedes.imagePaste.keybindingsPromptDone` from `~/.pi/agent/settings.json`.
+> **First-run offer (once ever, all platforms)** — when installed via the suite, on the first TUI session with image-paste enabled, if `~/.pi/agent/keybindings.json` doesn't exist yet, the suite offers to create it with exactly the snippet above: accepting creates the file and then tells you to run `/reload` (measured on Pi 1.2.0, the context an event handler receives has no `reload`, so the automatic path is a notification and the cleared binding applies once you run it), declining or cancelling (Esc) never asks again — re-open by deleting `archimedes.imagePaste.keybindingsPromptDone` from `~/.pi/agent/settings.json`.
+>
+> **Handing the key back to Pi** — `archimedes.imagePaste.suppressNativePaste: false` does two things, and both are needed: the package removes its own `app.clipboard.pasteImage` entry from `~/.pi/agent/keybindings.json` (that entry only, and only when the file holds nothing else — anything else is left byte-for-byte alone with a message naming the line to delete), **and** it registers no paste shortcut at all. The second half is what makes the first one reachable: while a shortcut is registered Pi keeps it and its restored binding never runs. So with the flag off you get Pi's paste and lose this package's image attach, queue and preview on the paste key. `/new` or `/reload` applies a change to the setting — no restart. If the file could not be cleaned, nothing is bound to the key until you delete the entry yourself, and the warning says exactly that.
 
 ## Per-platform requirements
 
@@ -63,6 +65,7 @@ New to Pi? Pi itself is a one-time global install and needs Node.js ≥ 22.19.0.
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `enabled` | bool | `true` | On/off for the extension, via `/plugins` (suite-managed) |
+| `suppressNativePaste` | bool | `true` | `false` gives the paste key back to Pi: the suite's `app.clipboard.pasteImage` entry is removed from `~/.pi/agent/keybindings.json` (only that entry, only if the file holds nothing else) **and** no paste shortcut is registered. You get Pi's paste and lose image attach / queue / preview on those keys. Applies at the next `/new` or `/reload`. Anything that is not the strict boolean `false` — `"false"`, `0` — keeps the default. |
 | `keybindingsPromptDone` | bool | `false` | Set true once the first-run keybindings.json offer has been answered (accept or decline); delete to re-open the offer |
 
 In the suite on/off is managed by the suite: toggle via `/plugins` (`archimedes.imagePaste.enabled`, default on).

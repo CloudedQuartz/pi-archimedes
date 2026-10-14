@@ -30,7 +30,9 @@ The decision above left `suppressNativePaste` as an abstention rather than a rev
 
 **Decided:** turning `archimedes.imagePaste.suppressNativePaste` off must restore pi's native binding, by removing the suite's own unbinding from that file.
 
-**The exception this requires.** Gate 4's rule is "never merge into or rewrite an existing user keybindings file", and restoration is by definition a rewrite of a file that exists. This amends that rule narrowly and deliberately: the extension may rewrite `~/.pi/agent/keybindings.json` **only** when the file is byte-shape-identical to the artefact the suite created — an object whose sole key is `app.clipboard.pasteImage` with an empty array as its value — and the rewrite only ever *removes* that key, leaving `{}`. Anything else is off-limits: any additional key, a non-empty value for `app.clipboard.pasteImage`, or content that does not parse. In those cases the extension touches nothing and tells the user the one-line edit to make itself.
+**The exception this requires.** Gate 4's rule is "never merge into or rewrite an existing user keybindings file", and restoration is by definition a rewrite of a file that exists. This amends that rule narrowly and deliberately: the extension may rewrite `~/.pi/agent/keybindings.json` only when the file **parses to** the artefact the suite created — a JSON object whose entire content is `app.clipboard.pasteImage` with an empty array as its value, optionally paired with `"$schema": "https://pi.dev/schemas/keybindings.schema.json"`, which is what the offer has written since PR #123 (refusing that pair would leave every install that accepted the offer unable to give the key back without a hand edit; `$schema` counts as ours only with pi's published URL, which keeps the set closed without widening it). The test is on the parsed object, not on the bytes: indentation, key order and whitespace are irrelevant, so this is a content test, not the "byte-shape-identical" wording this amendment originally carried — corrected here on 2026-10-14, because the shipped accept-set (`isSuiteOwnedUnbinding`) has never been byte-exact. Anything else is off-limits: any additional key, a non-empty value for `app.clipboard.pasteImage`, a foreign `$schema`, content that does not parse, a file that cannot be read. In those cases the extension touches nothing and tells the user the one-line edit to make itself. The rewrite only ever *removes* that key, leaving `{}`.
+
+*(See the 2026-10-14 amendment below: removing the entry turned out to be half of what "give the key back" means.)*
 
 **Consequences.**
 
@@ -39,3 +41,21 @@ The decision above left `suppressNativePaste` as an abstention rather than a rev
 - The restore is idempotent by content — once the file reads `{}` there is nothing to do, so it cannot rewrite a user file on every session start.
 - The user is told which case they are in: restored, nothing-to-do, or "this file is yours, here is the line to delete", surfaced through the `core/log` diagnostics path (no `console.*` from a startup path — `docs/features/ui.md`), never a stdout write.
 - The original decision stands: the superset condition, the first-run offer, and the `$schema` addition are unchanged by this amendment. What changed is only that reversal became something the code does instead of something it declines to do.
+
+## Amendment (2026-10-14): giving the key back takes two halves, and the second one is ours
+
+The 2026-10-13 mechanism shipped, was measured against a real pi, and did not give anyone their key back. Clearing the file is necessary but not sufficient, because we still hold the key:
+
+- `app.clipboard.pasteImage` is not in `RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS` (`dist/core/extensions/runner.js:9-27`), so `restrictOverride === false` for it, and `ExtensionRunner.getShortcuts` keeps the extension shortcut and records "Extension shortcut conflict: … Using `<ext>`" (`dist/core/extensions/runner.js:467-474`).
+- `CustomEditor.handleInput` asks `onExtensionShortcut` first and returns, before its own `app.clipboard.pasteImage` branch (`dist/modes/interactive/components/custom-editor.js:63-70`).
+
+So with the flag off and our shortcut registered, the user got: a clean `keybindings.json`, a recorded intent, one permanent `[Extension issues]` line — and still our handler on `ctrl+v`. (The same two lines falsify the older "both handlers fire on the shared key" story in the READMEs: exactly one handler ever ran, ours.)
+
+**Decided:** while `archimedes.imagePaste.suppressNativePaste` is `false`, image-paste registers **no** paste shortcut at all. `registerImagePaste` reads the same predicate the restore reads (`suiteMayClaimPasteKey`) and skips the whole `registerShortcut` loop — `ctrl+v`, `alt+v` and `ctrl+alt+v` alike — so the restored native binding is the only thing bound to the key.
+
+**Consequences.**
+
+- The trade is now real and is documented where users read it: with the flag off you get pi's paste and lose image-paste's attach/queue/preview on the paste keys. Nothing else in the package is removed — the submit-time marker attachment and the preview renderer stay registered, and there is no other entry point to the paste path to keep (`registerShortcut` was the only one; there is no `/` command for it).
+- The gate is read per session, never at module scope: pi caches the extension factory (`dist/core/extensions/loader.js:461-489`) but re-invokes it per session, and the composed suite calls the registration from its own `session_start` handler. Verified live: flipping the setting and pressing `/new` hands the key over with no restart and no file change.
+- A file the extension may not rewrite now leaves the key bound to **nobody** until the user deletes the entry — pi's own unbinding is still in it, and we no longer bind it. That is the honest state of a setting that says "don't suppress pi's paste", and the warning says so in the same breath as the one-line fix.
+- The amendment above is corrected in place on its accept-set wording (content-based, `$schema` pair included); nothing else in it changes.
