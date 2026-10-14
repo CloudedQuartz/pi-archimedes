@@ -538,12 +538,117 @@ describe("subagent tool rows: width audit", () => {
     }
   });
 
+  // pi keeps the component a tool returned (`ToolExecutionComponent`
+  // .resultRendererComponent) and hands it back as `context.lastComponent` on
+  // the next frame, then calls `render(width)` whenever it draws. Two frames can
+  // therefore differ only in width (a terminal resize) or only in content (a
+  // streaming tick at the same width), and the component must not answer either
+  // from the frame before.
+  it("keeps a reused component honest across a resize and a content change", () => {
+    const tool = registerTool();
+    const context: Record<string, unknown> = { state: {}, invalidate: () => {} };
+    const draw = (task: string, expanded = false) =>
+      tool.renderResult(
+        { content: [], details: { mode: "single", results: [makeResult({ task })], progress: undefined }, isError: false },
+        { expanded },
+        theme,
+        context,
+      );
+
+    // Same instance across frames — otherwise this test proves nothing.
+    draw("first task ".repeat(30));
+    const first = context.lastComponent;
+    draw("first task ".repeat(30));
+    expect(context.lastComponent).toBe(first);
+
+    // A resize: pi does not re-run the renderer when the terminal changes width,
+    // it just calls `render(newWidth)` on the component it kept. So the frames
+    // below come from one draw, and only the cache separates them.
+    for (const [wide, narrow] of [[200, 40], [120, 60]] as const) {
+      const component = draw("resize probe ".repeat(30));
+      const wideLines = component.render(wide);
+      const narrowLines = component.render(narrow);
+      expect(wideLines.length, `no rows at ${wide}`).toBeGreaterThan(0);
+      expect(narrowLines, `a resize served the cached ${wide}-column frame`)
+        .not.toEqual(wideLines);
+      for (const [width, lines] of [[wide, wideLines], [narrow, narrowLines]] as const) {
+        expect(visibleWidth(content(lines[0] ?? "")), `row not cut at ${width}`)
+          .toBeGreaterThanOrEqual(width - 1);
+      }
+      // And the same width again is stable, not re-laid out into something else.
+      expect(component.render(wide)).toEqual(wideLines);
+    }
+
+    // A streaming tick: new content, same width — the cached frame must go.
+    draw("the first run's task text ".repeat(10));
+    const before = draw("the first run's task text ".repeat(10)).render(120);
+    const after = draw("a second run's task text ".repeat(10)).render(120);
+    expect(after).not.toEqual(before);
+    expect(stripTerminalSequences(after[0] ?? "")).toContain("second run");
+
+    // invalidate() is part of the component contract (pi calls it on a theme
+    // change through `Tui.invalidate()`); it must not serve the old frame.
+    const kept = first as { render(width: number): string[]; invalidate(): void };
+    kept.invalidate();
+    expect(kept.render(120)).toEqual(after);
+  });
+
+  // The collapsed view is a summary: one row per line, cut at the frame. The
+  // expanded view is where the run is meant to be read in full (ADR 0020), so a
+  // line that carries content and no second copy of it — the stats line: turns,
+  // tools, tokens, duration, cost — has to keep wrapping there. As a row it is
+  // cut at the frame, and below ~64 columns the tail (tokens, duration, cost)
+  // disappeared with nothing else showing it, which is content #108 would have
+  // made unreachable.
+  it("loses no stat in the expanded view, however narrow the frame", () => {
+    const stats = { toolCount: 5, tokens: 1500, durationMs: 3200 };
+    const details = { mode: "single", results: [makeResult({ progressSummary: stats })], progress: undefined };
+    // What the stats line carries. Compared with whitespace removed, because a
+    // wrapped row may break a stat across rows.
+    const carried = ["⟳3", "5tools", "2ktok", "3s", "$0.01"];
+    const failures: string[] = [];
+
+    for (const width of WIDTHS) {
+      const lines = registerTool()
+        .renderResult({ content: [], details, isError: false }, { expanded: true }, theme, {
+          state: {},
+          invalidate: () => {},
+        })
+        .render(width);
+      const drawn = lines.map(content).join("").replace(/\s+/g, "");
+      for (const stat of carried) {
+        if (!drawn.includes(stat)) {
+          failures.push(`@${width}: expanded view lost ${stat}:\n  ${JSON.stringify(lines.map(content))}`);
+        }
+      }
+      for (const line of lines) {
+        if (visibleWidth(stripTerminalSequences(line)) > width) failures.push(`@${width}: row over the frame`);
+      }
+    }
+    // The collapsed view stays a summary: the same content is cut there, on
+    // purpose — this asserts the two views did not converge on the same shape.
+    const compact = registerTool()
+      .renderResult({ content: [], details, isError: false }, { expanded: false }, theme, {
+        state: {},
+        invalidate: () => {},
+      })
+      .render(40);
+    expect(compact).toHaveLength(3);
+    expect(content(compact[1] ?? "")).toContain("...");
+
+    expect(failures, failures.join("\n  ")).toEqual([]);
+  });
+
   it("holds the invariant for arbitrary content (fast-check)", () => {
     const widths = [200, 120, 80, 60, 40];
     // Wide-character and emoji content, plus whatever else the generator likes.
-    const wideTask = fc.stringMatching(/[\u3040-\u30ff\p{Emoji_Presentation}a-z ]{1,200}/u);
+    // Long by construction: a short string is never truncated, so a generator
+    // that mostly produces short ones proves nothing about the cut.
+    const wideChars = fc.constantFrom(...["\u3040", "\u30ff", "\u4e00", "\u65e5", "\u884c", "\uff5e", "🚀", "🔥", "✅", "🧪", "📦", "a", " ", "z"]);
+    const wideTask = fc.array(wideChars, { minLength: 60, maxLength: 200 }).map((parts) => parts.join(""));
     fc.assert(
       fc.property(wideTask, (task) => {
+        expect(visibleWidth(task)).toBeGreaterThanOrEqual(60); // long enough to cut
         for (const width of widths) {
           for (const line of rowComponents(task)
             .filter((e) => e.path !== "renderCall")

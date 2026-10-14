@@ -6,10 +6,12 @@ import { renderToolCallLine } from "@pi-archimedes/core/tool-render";
 type Theme = { fg: (token: string, text: string) => string; bold: (text: string) => string };
 
 // The expanded view mixes two kinds of line and says which is which (see
-// `row-block.ts`): a **row** (label, stats, activity, outcome) stays one line and
-// fills the frame; a **block** (the task text, the tool-call history, the output)
-// keeps wrapping, because the expanded view is where all of it is meant to be
-// readable (ADR 0020).
+// `row-block.ts`): a **row** (label, activity, outcome) stays one line and fills
+// the frame; a **block** (the stats line, the task text, the tool-call history,
+// the output) keeps wrapping, because the expanded view is where all of it is
+// meant to be readable (ADR 0020). The stats line is a block and not a row
+// because nothing else repeats its numbers: cut at the frame, its tail — tokens,
+// duration, cost — would simply be gone on a narrow terminal.
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -63,7 +65,10 @@ export function buildExpandedText(
   }, theme);
   const statsParts = [modelLabel, statsLine].filter(Boolean);
   if (statsParts.length > 0) {
-    lines.push(row(statsParts.join(" ")));
+    // A block, not a row: this is the only place the run's numbers appear, and
+    // the expanded view is where they are meant to be readable however narrow
+    // the frame is (ADR 0020).
+    lines.push(block(statsParts.join(" ")));
   }
 
   // Task
@@ -126,7 +131,7 @@ export function renderProgressExpanded(
   lines.push(row(buildAgentLabel(progress.agent, progress.task, theme)));
   lines.push(row(""));
 
-  // Stats line (same as compact view)
+  // Stats line (same as compact view) — a block: see buildExpandedText.
   const modelLabel = progress.model ? theme.fg("accent", progress.model) : "";
   const statsLine = buildStatsLine({
     turns: undefined,
@@ -137,7 +142,7 @@ export function renderProgressExpanded(
   }, theme);
   const statsParts = [modelLabel, statsLine].filter(Boolean);
   if (statsParts.length > 0) {
-    lines.push(row(statsParts.join(" ")));
+    lines.push(block(statsParts.join(" ")));
   }
 
   // Task
@@ -190,7 +195,7 @@ export function buildProgressExpandedText(
   lines.push(row(buildAgentLabel(progress.agent, progress.task, theme)));
   lines.push(row(""));
 
-  // Stats line (same as compact view)
+  // Stats line (same as compact view) — a block: see buildExpandedText.
   const modelLabel = progress.model ? theme.fg("accent", progress.model) : "";
   const statsLine = buildStatsLine({
     turns: undefined,
@@ -201,7 +206,7 @@ export function buildProgressExpandedText(
   }, theme);
   const statsParts = [modelLabel, statsLine].filter(Boolean);
   if (statsParts.length > 0) {
-    lines.push(row(statsParts.join(" ")));
+    lines.push(block(statsParts.join(" ")));
   }
 
   // Task
