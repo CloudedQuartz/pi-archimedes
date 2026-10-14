@@ -295,6 +295,19 @@ export function registerAskTool(pi: ExtensionAPI): void {
 		description: ASK_TOOL_DESCRIPTION,
 		parameters: AskParamsSchema,
 		outputSchema: AskOutputSchema,
+		/**
+		 * Declared to the model, never callable from a codemode script — the use pi
+		 * documents the exposure for ("orchestrating or interactive tools").
+		 * `pi: dist/core/agent-session.js`, `_getCallableTools()`: only `direct` +
+		 * active, `codemode` and `deferred` tools are callable, and codemode builds
+		 * its `tools` from that set.
+		 *
+		 * This costs a capability, measured before it was taken: with the old
+		 * default `direct` exposure a codemode script's `tools.ask({...})` resolved
+		 * (to `{"cancelled":true,...}` in a headless session, where there is no UI
+		 * to answer). Scripts lose that; the model's own calls are unaffected.
+		 */
+		exposure: "model-only",
 		renderCall: renderAskCall,
 		renderResult: renderAskResult,
 

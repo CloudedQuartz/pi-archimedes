@@ -51,6 +51,23 @@ export function registerSubagent(pi: ExtensionAPI): void {
       "Delegate tasks to subagents. Provide either 'task' (single) or 'tasks' (parallel). Agent is optional — omit for a config-less run with the parent's model and all tools. Model override is rarely needed; the agent config or parent model is used by default.",
     parameters: SUBAGENT_PARAMS_SCHEMA,
     outputSchema: SUBAGENT_OUTPUT_SCHEMA,
+    /**
+     * Declared to the model, never callable from a codemode script — pi's own
+     * wording for this exposure is "orchestrating" tools
+     * (`dist/core/extensions/types.d.ts`, `ToolExposure`), and dispatching a
+     * child session is that.
+     *
+     * Measured cost, so it is not discovered later: before this line a codemode
+     * script could dispatch a child and read its report — `tools.subagent({ task:
+     * "Reply with exactly the single word: child" })` resolved to
+     * `{ mode: "single", results: [ { outcome: "completed", finalOutput: "child",
+     * usage: {…} } ] }` on a real headless pi. After it the same call reports
+     * `tools.subagent does not exist`, and `subagent` is gone from the script's
+     * `ALL_TOOLS`. A script that wants a child's work now has to ask the model to
+     * dispatch one; `list_agents` stays `direct`, so scripts can still read the
+     * catalogue. The model's own dispatches are unaffected.
+     */
+    exposure: "model-only",
 
     async execute(
       _id: string,

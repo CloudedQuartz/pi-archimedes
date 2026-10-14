@@ -26,6 +26,10 @@ import {
 // observation, so a script keeps rejecting with the same text it rejected with
 // before these schemas existed. (pi's own `bash` does the opposite for a
 // non-zero exit, where the failing command *is* the observation.)
+//
+// Exposure is left at `direct` for all three on purpose: `codemode`/`deferred`
+// would take the declarations away from the model, and with no virtual model and
+// no MCP server registered (ADR 0029) nothing would hand them back.
 
 /** One hit, as the providers produce them (`SearchResultItem`). */
 const SearchResultItemSchema = Type.Object({
@@ -91,6 +95,10 @@ export function registerTools(pi: ExtensionAPI) {
       proxy: Type.Optional(Type.String()),
     }),
     outputSchema: WebSearchOutputSchema,
+    // Results come from outside this session's domain, which is what the MCP
+    // hint means. Author-declared and unverified: pi documents `annotations` as
+    // the input for a permission gate, not as a guarantee.
+    annotations: { openWorldHint: true },
     renderCall: renderWebSearchCall,
     renderResult: renderWebSearchResult,
     execute: async (_toolCallId, params, signal, _onUpdate, _ctx) => {
@@ -154,6 +162,7 @@ export function registerTools(pi: ExtensionAPI) {
       proxy: Type.Optional(Type.String()),
     }),
     outputSchema: FetchContentOutputSchema,
+    annotations: { openWorldHint: true },
     renderCall: renderFetchContentCall,
     renderResult: renderFetchContentResult,
     execute: async (_toolCallId, params, signal, _onUpdate, _ctx) => {
@@ -207,6 +216,7 @@ export function registerTools(pi: ExtensionAPI) {
       limit: Type.Optional(Type.Number()),
     }),
     outputSchema: GetSearchContentOutputSchema,
+    annotations: { openWorldHint: true },
     renderCall: renderGetSearchContentCall,
     renderResult: renderGetSearchContentResult,
     execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
