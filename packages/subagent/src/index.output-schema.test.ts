@@ -238,3 +238,80 @@ describe("subagent structuredContent — parallel mode", () => {
     expect("structuredContent" in result).toBe(false);
   });
 });
+
+// The outcomes above tests never produced. `truncated` and `aborted` are declared
+// in `SUBAGENT_OUTPUT_SCHEMA`'s outcome union, and ADR 0028 makes them ordinary
+// successes (something was produced, so the run is not `isError`) — so their
+// reports reach the structured payload, and the declaration has to hold for them
+// too. Nothing here was previously exercised: the suite only ever handed back a
+// `completed` run.
+describe("subagent structuredContent — the other run outcomes", () => {
+  it.each(["truncated", "aborted"] as const)("%s run: not an error, carries a report, validates", async (outcome) => {
+    discoverAgents.mockReturnValue([agentConfig()]);
+    executeSubagent.mockResolvedValueOnce({ ...okResult, outcome, finalOutput: "a partial answer" });
+
+    const tool = subagent();
+    const result = await tool.execute("c3", { agent: "reviewer", task: "review it" }, undefined, undefined, makeCtx());
+
+    expect(result.isError).toBe(false);
+    const report = (result.structuredContent as { results: Array<Record<string, unknown>> }).results[0]!;
+    expect(report["outcome"]).toBe(outcome);
+    expect(report["error"]).toBeUndefined();
+    expect(check(tool, result.structuredContent)).toBe(true);
+  });
+
+  it("a run reporting almost nothing (no session id, model, output or summary) validates", async () => {
+    discoverAgents.mockReturnValue([]);
+    // The bare shape `executeSubagent` produces for a config-less run that had
+    // nothing else to report: every optional field absent, not present-and-null.
+    executeSubagent.mockResolvedValueOnce({
+      agent: "subagent",
+      task: "t",
+      exitCode: 0,
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+    });
+
+    const tool = subagent();
+    const result = await tool.execute("c4", { task: "t" }, undefined, undefined, makeCtx());
+
+    expect(result.structuredContent).toEqual({
+      mode: "single",
+      results: [
+        {
+          agent: "subagent",
+          task: "t",
+          exitCode: 0,
+          usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+        },
+      ],
+    });
+    expect(check(tool, result.structuredContent)).toBe(true);
+  });
+
+  it("a parallel batch with one failed run reports it per-run, inside a valid payload", async () => {
+    discoverAgents.mockReturnValue([agentConfig(), agentConfig({ name: "explorer" })]);
+    executeParallel.mockResolvedValueOnce([
+      okResult,
+      { ...okResult, agent: "explorer", task: "look around", outcome: undefined, finalOutput: undefined, error: "child died" },
+    ]);
+
+    const tool = subagent();
+    const result = await tool.execute(
+      "c5",
+      { tasks: [{ agent: "reviewer", task: "review it" }, { agent: "explorer", task: "look around" }] },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+
+    // The batch is not `isError` — it is, and was before these schemas existed:
+    // one run failing inside a batch is reported per run, in the text (`✗ explorer`)
+    // and in the report (`error`). `error` is declared optional for exactly this.
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]!.text).toContain("✗ explorer");
+    const reports = (result.structuredContent as { results: Array<Record<string, unknown>> }).results;
+    expect(reports[1]!["error"]).toBe("child died");
+    expect(reports[0]!["error"]).toBeUndefined();
+    expect(check(tool, result.structuredContent)).toBe(true);
+  });
+});

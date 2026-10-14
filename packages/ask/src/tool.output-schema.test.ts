@@ -181,6 +181,24 @@ describe("ask structuredContent — success paths", () => {
     expect(check(tool, result.structuredContent)).toBe(true);
   });
 
+  it("a typed answer with nothing selected → cancelled false, customInput present", async () => {
+    // `cancelled` is the tool's own test — nothing selected AND nothing typed —
+    // so a typed answer is not a cancellation even with an empty selection, and
+    // `customInput` is the only field that says so.
+    bridgeState.active = true;
+    bridgeState.ask.mockResolvedValue({ cancelled: false, results: [{ id: "q1", selectedOptions: [], customInput: "typed instead" }] });
+
+    const tool = captureTool();
+    const result = await tool.execute("t5", oneQuestion, undefined, undefined, { hasUI: true, ui: {} });
+
+    const structured = result.structuredContent as { cancelled: boolean; results: Array<Record<string, unknown>> };
+    expect(structured.cancelled).toBe(false);
+    expect(structured.results[0]!.selectedOptions).toEqual([]);
+    expect(structured.results[0]!.customInput).toBe("typed instead");
+    expect(result.content[0]!.text).toContain("typed instead");
+    expect(check(tool, result.structuredContent)).toBe(true);
+  });
+
   it("tabs dialog with two questions → two results, in question order", async () => {
     vi.mocked(askQuestionsWithTabs).mockResolvedValue({
       cancelled: false,

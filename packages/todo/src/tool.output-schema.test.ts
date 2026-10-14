@@ -106,4 +106,12 @@ describe("manage_todo_list structuredContent", () => {
     expect(result.content[0]!.text).toContain("Validation failed:");
     expect("structuredContent" in result).toBe(false);
   });
+
+  it("write of an empty list → { operation: write, todos: [] }, valid (a cleared list is an answer)", async () => {
+    const { tool, call } = harness();
+    const result = await call({ operation: "write", todoList: [] });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toEqual({ operation: "write", todos: [] });
+    expect(check(tool, result.structuredContent)).toBe(true);
+  });
 });
