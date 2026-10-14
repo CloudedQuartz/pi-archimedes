@@ -74,7 +74,11 @@ export function getUISettingsItems(config: UIConfig): SettingItem[] {
       label: "Startup Splash",
       description:
         "Archimedes startup splash animation (Off = pi's own startup screen, which is the default)",
-      currentValue: config.startupSplash ? "On" : "Off",
+      // Strictly `=== true`, because that is how the gate reads it (`index.ts`):
+      // a hand-edited `"true"` or `1` is off on screen, so it must read as off
+      // here too. Every other boolean row can afford truthiness because every
+      // other boolean is *consumed* by truthiness.
+      currentValue: config.startupSplash === true ? "On" : "Off",
       values: ["On", "Off"],
     },
     {

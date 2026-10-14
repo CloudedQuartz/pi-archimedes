@@ -137,5 +137,22 @@ describe("getUISettingsItems", () => {
       });
       expect(items.find((i) => i.id === "editorSpinStyle")?.currentValue).toBe("Typing");
     });
+
+    // `startupSplash` is read strictly by the gate (`config.startupSplash === true`,
+    // `index.ts`), so a hand-edited `"true"` or `1` means OFF on screen. The row
+    // has to answer with the same reading — a row saying `On` over a session that
+    // draws pi's own startup is the panel promising something that never arrives.
+    it("a startupSplash that is not the literal true projects to 'Off', like the gate reads it", () => {
+      for (const value of ["true", 1, "yes", {}, null]) {
+        const items = getUISettingsItems({
+          ...DEFAULT_UI_CONFIG,
+          startupSplash: value as never,
+        });
+        expect(
+          items.find((i) => i.id === "startupSplash")?.currentValue,
+          `startupSplash=${String(value)}`,
+        ).toBe("Off");
+      }
+    });
   });
 });
