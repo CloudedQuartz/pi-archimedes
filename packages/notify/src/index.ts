@@ -5,6 +5,17 @@ import { loadConfig, saveConfig } from "@pi-archimedes/core/settings-io";
 import { execFile } from "node:child_process";
 
 // ── Trigger constants ────────────────────────────────────────────────────────
+//
+// Relation to pi's own OSC 7501 program status (pi >= 1.1.0):
+// pi's ProgramStatusReporter already reports this session's state to the
+// terminal — `done` when a run settles and `blocked` when a dialog opens
+// (`pi-coding-agent/dist/modes/interactive/program-status-reporter.js`,
+// encoded by pi-tui's `formatProgramStatus`). The two triggers below map onto
+// it one-for-one: AGENT_SETTLED <-> `done`, UI_PROMPT <-> `blocked`. We emit
+// nothing 7501-related; what this package adds on top of that report is the
+// DELAYED desktop notification (OSC 777/9/99, Windows toast, tmux DCS wrap)
+// and the cancellation rules below — pi reports state changes immediately and
+// to the terminal only. Full comparison: docs/features/notify.md.
 
 const TRIGGER = {
   AGENT_SETTLED: "agent_settled",

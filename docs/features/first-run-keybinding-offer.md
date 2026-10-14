@@ -46,7 +46,8 @@ the generated snippet is checked against that published schema.
 > only half of handing the key back: while image-paste registers a shortcut for
 > the same key, Pi keeps the shortcut and the restored native binding never
 > runs, so `registerImagePaste` registers nothing while the setting is off.
-> See `docs/roadmap/pi-1-x-alignment.md` Task 12 item 2b and ADR 0030.
+> See ADR 0030 (`docs/decisions/0030-image-paste-superset-not-supplement.md`) and
+> the package-facing write-up in `docs/features/image-paste.md`.
 
 ## Gates (evaluated in order)
 
@@ -164,7 +165,14 @@ below) and does not give anyone their key back:
    key, current `$schema` + unbinding pair). Anything else — extra key, foreign
    `$schema`, non-empty binding, unparsable or unreadable file — is left
    byte-for-byte alone and the user gets one warning naming the line to delete,
-   now also saying that the paste key is left unbound until they delete it.
+   now also saying that image-paste is not binding the paste key either. The
+   warning adds that the key "does nothing until you do", which holds only when
+   the refused file still carries the `[]` unbinding — a refused file that never
+   disabled `app.clipboard.pasteImage` (only `$schema`, only foreign keys, or
+   JSON that does not parse, which Pi's loader discards) leaves Pi's native paste
+   live on its default key, and a user told to delete an entry that is not there
+   is being sent on an errand. The string is pinned by `keybinding-offer.test.ts`,
+   so narrowing it is a behaviour change, tracked as a follow-up.
    Idempotent by content: a file that already reads `{}` is reported without a
    rewrite.
 2. **The key.** `registerImagePaste` reads the same setting
