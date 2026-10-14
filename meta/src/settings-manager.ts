@@ -1,20 +1,51 @@
 /**
- * Settings Manager TUI component.
+ * Settings manager TUI component.
  * Center-screen overlay with 2 modes: List and Prompt (free-input field edit).
- * Mirrors the chrome of the /agents manager (see agent-manager.ts).
+ *
+ * The list is pi-tui's own `SettingsList` — the component behind pi's
+ * `/settings` — wrapped in the shared overlay chrome from
+ * `@pi-archimedes/core/overlay` (`wrapWithBorder`, `renderHeader`,
+ * `renderFooter`) so `/archimedes` and `/plugins` look like every other
+ * archimedes panel while the rows, their alignment, the selected-row
+ * description and the change hint come from pi. The theme wiring below is
+ * pi's `getSettingsListTheme()` (`pi-coding-agent`
+ * `dist/modes/interactive/theme/theme.js:896`) re-anchored on the `Theme`
+ * instance pi hands the overlay factory: accent for the selected label and the
+ * cursor, accent/muted for the value, dim for description and hint. No escape
+ * sequence is composed here (ADR 0029).
+ *
+ * Two pieces stay ours because pi's component does not offer them:
+ *
+ * - **Search.** `SettingsList`'s `enableSearch` shows a fuzzy filter box
+ *   permanently, which would (a) swallow the `s` keystroke the panel needs for
+ *   save, and (b) remove the `/`-arm / esc-clear the overlay has always had. So
+ *   the row is ours — pi-tui's `Input` drawing it, our substring filter feeding
+ *   the list — and `enableSearch` is left off.
+ * - **← / → stepping.** `SettingsList` cycles a value on Enter/Space only and
+ *   exposes no way to read which row it has selected, so the cursor index is
+ *   mirrored here (`move()` drives the list with `selectItem`) and the arrows
+ *   step against it. Enter/Space are forwarded untouched, which is what makes
+ *   the free-input row work: an editable item carries a `submenu`, and pi's
+ *   component opens whatever component that returns.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { SettingItem } from "@earendil-works/pi-tui";
-import { matchesKey, Key, CURSOR_MARKER, truncateToWidth } from "@earendil-works/pi-tui";
 import {
-  visibleWidth,
+  Input,
+  SettingsList,
+  decodeKittyPrintable,
+  getKeybindings,
+  type Component,
+  type SettingItem,
+  type SettingsListTheme,
+} from "@earendil-works/pi-tui";
+import {
   padEnd,
-  wrapText,
   renderHeader,
   renderFooter,
   wrapWithBorder,
   borderContentWidth,
+  visibleWidth,
 } from "@pi-archimedes/core/overlay";
 
 // ── Public types ────────────────────────────────────────────────────────────
@@ -37,47 +68,40 @@ export interface SettingsManagerOptions {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const VISIBLE_ROWS = 20;
+/** Visible rows. pi's root `/settings` list shows ten (`settings-selector.js:628`). */
+const MAX_VISIBLE = 10;
 
-// ── State ───────────────────────────────────────────────────────────────────
-
-interface SettingsManagerState {
-  mode: "list" | "prompt";
-  /** Index into filteredItems. */
-  selectedIndex: number;
-  /** "" = no search. */
-  searchQuery: string;
-  /** Search input armed (toggled by /, cleared by esc). */
-  filterActive: boolean;
-  /** Recomputed when searchQuery changes. */
-  filteredItems: SettingItem[];
-  /** item.id while in prompt mode. */
-  promptField: string | null;
-  /** Seeded from item.currentValue on prompt entry. */
-  promptValue: string;
-  promptError: string | null;
-}
+const TITLE = " Settings ";
+/**
+ * The keys pi's own hint line under the list does not mention. It says
+ * "Enter/Space to change · Esc to cancel", so those are not repeated here.
+ */
+const LIST_KEYS = " [↑↓] move  [←→] value  [/] search  [s] save ";
+const PROMPT_KEYS = " [enter] confirm  [esc] cancel ";
+/** Affordance for a row that takes typed text rather than cycling values. */
+const EDITABLE_HINT = "Enter to type a value";
+/** Shown when the search filters everything out (the wording the panel has always used). */
+const NO_MATCHES = "No matching settings";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function filterItemsByLabel(items: SettingItem[], query: string): SettingItem[] {
-  if (!query) return items;
-  const q = query.toLowerCase();
-  return items.filter((item) => item.label.toLowerCase().includes(q));
-}
-
-/** ASCII printable — list-mode SEARCH input (matches the /agents agent-manager pattern). */
-function isPrintableChar(data: string): boolean {
+/**
+ * ASCII printable — the list SEARCH input, as it has always been: a wide
+ * search query is not reachable from the keyboard (the free-input field is, and
+ * pi-tui's `Input` accepts the whole range there).
+ */
+function isAsciiPrintable(data: string): boolean {
   return data.length === 1 && data >= " " && data <= "~";
 }
 
-/** Single non-control code unit — free-text PROMPT fields accept accented/Cyrillic/CJK chars. */
-function isPromptTextChar(data: string): boolean {
+/**
+ * Single non-control code point — a keystroke that would *insert* text, so a
+ * number field can reject it. Accented/Cyrillic/CJK count; DEL and C1 do not.
+ */
+function isInsertChar(data: string): boolean {
   if (data.length !== 1) return false;
   const cp = data.codePointAt(0);
-  if (cp === undefined) return false;
-  // Accept single code points >= 0x20, excluding DEL (0x7f) and the C1 range (0x80..0x9f).
-  if (cp < 0x20 || cp === 0x7f) return false;
+  if (cp === undefined || cp < 0x20 || cp === 0x7f) return false;
   if (cp >= 0x80 && cp <= 0x9f) return false;
   return true;
 }
@@ -90,271 +114,296 @@ export function createSettingsManager(opts: SettingsManagerOptions): {
   invalidate(): void;
   dispose(): void;
 } {
-  const state: SettingsManagerState = {
-    mode: "list",
-    selectedIndex: 0,
-    searchQuery: "",
-    filterActive: false,
-    filteredItems: opts.items,
-    promptField: null,
-    promptValue: "",
-    promptError: null,
+  const theme = opts.theme;
+  const kb = getKeybindings();
+
+  // pi's getSettingsListTheme(), token for token.
+  const listTheme: SettingsListTheme = {
+    label: (text, selected) => (selected ? theme.fg("accent", text) : text),
+    value: (text, selected) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),
+    description: (text) => theme.fg("dim", text),
+    cursor: theme.fg("accent", "→ "),
+    hint: (text) => theme.fg("dim", text),
   };
 
-  const theme = opts.theme;
-
-  // ── Render (list mode) ──────────────────────────────────────────────────
-
-  function renderList(contentWidth: number): string[] {
-    const lines: string[] = [];
-
-    lines.push(renderHeader(" Settings ", contentWidth, theme));
-    lines.push(padEnd("", contentWidth));
-
-    if (state.filterActive) {
-      lines.push(padEnd(`Search: ${state.searchQuery}${CURSOR_MARKER}`, contentWidth));
-    }
-
-    lines.push(padEnd("", contentWidth));
-
-    // Label column width: widest label across all items, capped at 30.
-    const maxLabelWidth = Math.min(
-      30,
+  /**
+   * Label column, in drawn cells. `SettingsList` sizes it from the rows it is
+   * handed (`min(36, widest label)`) and this panel hands it a filtered subset,
+   * so labels are padded to the width the whole set implies — otherwise the
+   * value column slides left every time the search narrows.
+   */
+  const labelColumn = Math.max(
+    1,
+    Math.min(
+      36,
       opts.items.reduce((max, item) => Math.max(max, visibleWidth(item.label)), 0),
-    );
+    ),
+  );
 
-    const start = Math.max(
-      0,
-      Math.min(state.selectedIndex - 10, state.filteredItems.length - VISIBLE_ROWS),
-    );
-    const end = Math.min(start + VISIBLE_ROWS, state.filteredItems.length);
+  /** The caller's own label per row, so the search matches what the item is called. */
+  const labels = new Map<string, string>();
 
-    for (let i = start; i < end; i++) {
-      const item = state.filteredItems[i];
-      if (!item) continue;
-      const isCursor = i === state.selectedIndex;
-      const prefix = isCursor ? "> " : "  ";
+  /**
+   * Rows as the list sees them: one per caller item, kept here so a write
+   * survives a filter rebuild and the caller's own item objects are never
+   * touched. Descriptions gain the editable affordance; editable rows gain the
+   * submenu that opens the field.
+   */
+  const rows: SettingItem[] = opts.items.map((item) => {
+    const descriptor = opts.prompts[item.id];
+    labels.set(item.id, item.label);
+    const row: SettingItem = {
+      id: item.id,
+      label: padEnd(item.label, labelColumn),
+      currentValue: item.currentValue,
+    };
+    if (item.description !== undefined) row.description = item.description;
+    if (item.values !== undefined) row.values = item.values;
+    if (!descriptor) return row;
+    row.description = row.description ? `${row.description} · ${EDITABLE_HINT}` : EDITABLE_HINT;
+    row.submenu = (currentValue, done) => openField(descriptor, currentValue, done);
+    return row;
+  });
 
-      // Truncate before padding so an over-long label can never overflow the row.
-      const label = truncateToWidth(item.label, maxLabelWidth, "");
-      const labelCol = isCursor
-        ? theme.fg("accent", padEnd(label, maxLabelWidth))
-        : padEnd(label, maxLabelWidth);
+  const searchInput = new Input({ prompt: "Search: " });
+  // This overlay is the focused component whenever it is drawn, so the field it
+  // shows owns the hardware cursor marker.
+  searchInput.focused = true;
 
-      // Compose the full value string (with edit marker) BEFORE truncation so
-      // the marker is never clipped.
-      const descriptor = opts.prompts[item.id];
-      const valueString = descriptor
-        ? `${item.currentValue}  ${theme.fg("dim", "edit…")}`
-        : item.currentValue;
-      const remainingWidth = Math.max(1, contentWidth - 2 - maxLabelWidth - 2);
-      const valueCol = isCursor
-        ? truncateToWidth(valueString, remainingWidth, "")
-        : theme.fg("dim", truncateToWidth(valueString, remainingWidth, ""));
+  let list = buildList("");
+  let searchArmed = false;
+  /** Index into the rows the list is showing; kept in step with `list`. */
+  let cursor = 0;
+  /** True while a free-input field is open (the list's submenu). */
+  let promptOpen = false;
 
-      lines.push(padEnd(`${prefix}${labelCol}  ${valueCol}`, contentWidth));
-    }
-
-    // Feedback when search filters to zero items.
-    if (state.filteredItems.length === 0) {
-      lines.push(padEnd(theme.fg("dim", "No matching settings"), contentWidth));
-    }
-
-    // Scroll indicator
-    if (state.filteredItems.length > VISIBLE_ROWS) {
-      lines.push(theme.fg("dim", `  (${state.selectedIndex + 1}/${state.filteredItems.length})`));
-    }
-
-    // Description of the selected item
-    const selected = state.filteredItems[state.selectedIndex];
-    if (selected && selected.description) {
-      lines.push(padEnd("", contentWidth));
-      for (const line of wrapText(selected.description, contentWidth - 2)) {
-        lines.push(theme.fg("dim", `  ${line}`));
-      }
-    }
-
-    lines.push(padEnd("", contentWidth));
-    lines.push(
-      renderFooter(
-        " [↑↓] move  [←→] value  [enter] edit  [/] search  [s] save  [esc] close ",
-        contentWidth,
-        theme,
-      ),
-    );
-
-    return lines;
+  function visibleRows(query: string): SettingItem[] {
+    if (!query) return rows;
+    const q = query.toLowerCase();
+    // Matched on the caller's own label, never on the padded copy.
+    return rows.filter((row) => (labels.get(row.id) ?? row.label).toLowerCase().includes(q));
   }
 
-  // ── Render (prompt mode) ────────────────────────────────────────────────
+  function buildList(query: string): SettingsList {
+    return new SettingsList(
+      visibleRows(query),
+      MAX_VISIBLE,
+      listTheme,
+      // `SettingsList` has already written `currentValue` on the row object.
+      (id, newValue) => writeValue(id, newValue),
+      () => opts.onClose(),
+      { enableSearch: false },
+    );
+  }
 
-  function renderPrompt(width: number): string[] {
+  /** The one write path: never report a change for an item the caller dropped. */
+  function writeValue(id: string, newValue: string): void {
+    if (!opts.items.some((item) => item.id === id)) return;
+    opts.onChange(id, newValue);
+  }
+
+  function shownRows(): SettingItem[] {
+    return visibleRows(searchInput.getValue());
+  }
+
+  // ── Prompt mode (a `SettingsList` submenu) ────────────────────────────────
+
+  function openField(
+    descriptor: PromptDescriptor,
+    seed: string,
+    done: (selectedValue?: string) => void,
+  ): Component {
+    const field = new Input({ prompt: "" });
+    field.focused = true;
+    // Seed through pi-tui's own paste path: `setValue` parks the caret at 0 (so
+    // the first Backspace would eat nothing and the first character land in
+    // front of the value), and pasting cannot split a grapheme.
+    field.handleInput(`\x1b[200~${seed}\x1b[201~`);
+    let error: string | null = null;
+    promptOpen = true;
+
+    const close = (selectedValue?: string): void => {
+      promptOpen = false;
+      done(selectedValue);
+    };
+
+    const commit = (): void => {
+      const typed = field.getValue();
+      if (descriptor.kind === "number") {
+        const n = parseInt(typed, 10);
+        if (!Number.isFinite(n) || n < (descriptor.min ?? 0)) {
+          error = `must be >= ${descriptor.min ?? 0}`;
+          return; // stay in the field, exactly as before
+        }
+        close(String(n));
+        return;
+      }
+      close(typed);
+    };
+
+    return {
+      render(width: number): string[] {
+        const lines: string[] = [];
+        lines.push(theme.fg("dim", `  ${descriptor.label}`));
+        const inner = Math.max(1, width - 2);
+        lines.push(padEnd(`  ${field.render(inner)[0] ?? ""}`, width));
+        lines.push(padEnd("", width));
+        if (error) lines.push(theme.fg("error", `  ${error}`));
+        return lines;
+      },
+
+      handleInput(data: string): void {
+        if (kb.matches(data, "tui.input.submit") || data === "\n") {
+          commit();
+          return;
+        }
+        if (kb.matches(data, "tui.select.cancel")) {
+          // Discard the typed value: nothing is written, the row keeps its own.
+          close();
+          return;
+        }
+        if (descriptor.kind === "number") {
+          // Digits only, as the field has always been: a keystroke that would
+          // insert something else is swallowed before it reaches the field.
+          const kitty = decodeKittyPrintable(data);
+          if (kitty !== undefined ? !/^\d$/.test(kitty) : isInsertChar(data) && !/\d/.test(data)) return;
+          // …and no paste.
+          if (data.includes("\x1b[200~")) return;
+        }
+        field.handleInput(data);
+        error = null;
+      },
+
+      invalidate(): void {
+        field.invalidate();
+      },
+    };
+  }
+
+  // ── List-mode input ───────────────────────────────────────────────────────
+
+  function refilter(): void {
+    cursor = 0;
+    list = buildList(searchInput.getValue());
+  }
+
+  function move(delta: number): void {
+    const items = shownRows();
+    if (items.length === 0) return;
+    cursor = (cursor + delta + items.length) % items.length;
+    const target = items[cursor];
+    // The list owns the visible window, so the mirror is pushed into it.
+    if (target) list.selectItem(target.id);
+  }
+
+  function stepValue(direction: 1 | -1): void {
+    const item = shownRows()[cursor];
+    if (!item || !item.values || item.values.length <= 1) return;
+    const values = item.values;
+    const currentIdx = Math.max(0, values.indexOf(item.currentValue));
+    const nextIndex = (currentIdx + direction + values.length) % values.length;
+    const next = values[nextIndex];
+    if (next === undefined) return;
+    item.currentValue = next;
+    writeValue(item.id, next);
+  }
+
+  function handleListInput(data: string): void {
+    if (kb.matches(data, "tui.select.cancel") && searchArmed) {
+      // esc clears an armed search before it means "close".
+      searchInput.setValue("");
+      searchArmed = false;
+      refilter();
+      return;
+    }
+    if (kb.matches(data, "tui.select.up")) {
+      move(-1);
+      return;
+    }
+    if (kb.matches(data, "tui.select.down")) {
+      move(1);
+      return;
+    }
+    if (kb.matches(data, "tui.editor.cursorLeft")) {
+      stepValue(-1);
+      return;
+    }
+    if (kb.matches(data, "tui.editor.cursorRight")) {
+      stepValue(1);
+      return;
+    }
+    if (data === "/") {
+      // Re-pressing while active is a no-op, not a character.
+      searchArmed = true;
+      return;
+    }
+    if (searchArmed) {
+      if (kb.matches(data, "tui.editor.deleteCharBackward")) {
+        searchInput.handleInput(data);
+        refilter();
+        return;
+      }
+      if (isAsciiPrintable(data)) {
+        searchInput.handleInput(data);
+        refilter();
+        return;
+      }
+    }
+    if (data === "s" && !searchArmed) {
+      opts.onSave();
+      return;
+    }
+    // Enter / Space belong to pi's component: cycle the value, or open the
+    // field an editable row carries. esc arrives here too, as onCancel.
+    list.handleInput(data);
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  /**
+   * The list, or the empty-filter message. The filter is ours, so an empty
+   * result is ours to report — handed an empty item set `SettingsList` would
+   * say "No settings available", which is about a panel with no settings at all.
+   */
+  function listBody(contentWidth: number): string[] {
+    if (searchInput.getValue() && shownRows().length === 0) {
+      return [theme.fg("dim", `  ${NO_MATCHES}`)];
+    }
+    return list.render(contentWidth);
+  }
+
+  function render(width: number): string[] {
     const contentWidth = borderContentWidth(width);
-    const descriptor = state.promptField ? opts.prompts[state.promptField] : undefined;
-    // Guard the impossible state — render must be total and the overlay frame
-    // must never collapse, even without a descriptor.
-    if (!descriptor) return wrapWithBorder([], width, theme);
+    const lines: string[] = [renderHeader(TITLE, contentWidth, theme), padEnd("", contentWidth)];
 
-    const lines: string[] = [];
-
-    lines.push(renderHeader(" Settings ", contentWidth, theme));
-    lines.push(padEnd("", contentWidth));
-    lines.push(padEnd("", contentWidth));
-    lines.push(theme.fg("dim", `  ${descriptor.label}`));
-    lines.push(padEnd(`  ${state.promptValue}${CURSOR_MARKER}`, contentWidth));
-    lines.push(padEnd("", contentWidth));
-    if (state.promptError) {
-      lines.push(theme.fg("error", `  ${state.promptError}`));
+    if (searchArmed && !promptOpen) {
+      lines.push(padEnd(searchInput.render(contentWidth)[0] ?? "", contentWidth));
     }
     lines.push(padEnd("", contentWidth));
-    lines.push(renderFooter(" [enter] confirm  [esc] cancel ", contentWidth, theme));
+
+    lines.push(...listBody(contentWidth));
+
+    // The list ends on its own hint line; the field needs a gap before the keys.
+    if (promptOpen) lines.push(padEnd("", contentWidth));
+    lines.push(renderFooter(promptOpen ? PROMPT_KEYS : LIST_KEYS, contentWidth, theme));
 
     return wrapWithBorder(lines, width, theme);
   }
 
-  function render(width: number): string[] {
-    if (state.mode === "prompt") return renderPrompt(width);
-    return wrapWithBorder(renderList(borderContentWidth(width)), width, theme);
-  }
-
-  // ── Input (list mode) ───────────────────────────────────────────────────
-
-  function handleListInput(data: string): void {
-    if (matchesKey(data, Key.up)) {
-      if (state.filteredItems.length === 0) return;
-      state.selectedIndex =
-        (state.selectedIndex - 1 + state.filteredItems.length) % state.filteredItems.length;
-    } else if (matchesKey(data, Key.down)) {
-      if (state.filteredItems.length === 0) return;
-      state.selectedIndex = (state.selectedIndex + 1) % state.filteredItems.length;
-    } else if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
-      const item = state.filteredItems[state.selectedIndex];
-      if (!item || !item.values || item.values.length <= 1) return;
-      const values = item.values;
-      const currentIdx = Math.max(0, values.indexOf(item.currentValue));
-      const nextIndex = matchesKey(data, Key.left)
-        ? (currentIdx - 1 + values.length) % values.length
-        : (currentIdx + 1) % values.length;
-      const next = values[nextIndex];
-      if (next === undefined) return;
-      item.currentValue = next;
-      opts.onChange(item.id, next);
-    } else if (matchesKey(data, Key.enter)) {
-      const item = state.filteredItems[state.selectedIndex];
-      if (!item) return;
-      if (opts.prompts[item.id]) {
-        state.mode = "prompt";
-        state.promptField = item.id;
-        state.promptValue = item.currentValue;
-        state.promptError = null;
-      }
-    } else if (matchesKey(data, "/")) {
-      // Re-pressing while active is a no-op.
-      state.filterActive = true;
-    } else if (matchesKey(data, Key.backspace)) {
-      if (state.filterActive && state.searchQuery.length > 0) {
-        state.searchQuery = state.searchQuery.slice(0, -1);
-        state.filteredItems = filterItemsByLabel(opts.items, state.searchQuery);
-        state.selectedIndex = 0;
-      }
-    } else if (matchesKey(data, Key.escape)) {
-      if (state.filterActive) {
-        state.searchQuery = "";
-        state.filterActive = false;
-        state.filteredItems = opts.items;
-        state.selectedIndex = 0;
-      } else {
-        opts.onClose();
-      }
-    } else if (isPrintableChar(data) && state.filterActive) {
-      // Must come before the "s" branch so typing "s" in search doesn't save.
-      state.searchQuery += data;
-      state.filteredItems = filterItemsByLabel(opts.items, state.searchQuery);
-      state.selectedIndex = 0;
-    } else if (matchesKey(data, "s")) {
-      if (!state.filterActive) {
-        opts.onSave();
-      }
-    }
-  }
-
-  // ── Input (prompt mode) ─────────────────────────────────────────────────
-
-  function handlePromptInput(data: string): void {
-    if (matchesKey(data, Key.escape)) {
-      // Discard typed value — item.currentValue untouched.
-      state.mode = "list";
-      state.promptField = null;
-      state.promptError = null;
-    } else if (matchesKey(data, Key.enter)) {
-      const field = state.promptField;
-      const descriptor = field ? opts.prompts[field] : undefined;
-      if (!field || !descriptor) {
-        state.mode = "list";
-        state.promptField = null;
-        state.promptError = null;
-        return;
-      }
-
-      // Resolve the item FIRST — never mutate config if the target is gone.
-      const item = opts.items.find((i) => i.id === field);
-      if (!item) {
-        state.mode = "list";
-        state.promptField = null;
-        state.promptError = null;
-        return;
-      }
-
-      let normalized: string;
-      if (descriptor.kind === "number") {
-        const n = parseInt(state.promptValue, 10);
-        if (!Number.isFinite(n) || n < (descriptor.min ?? 0)) {
-          state.promptError = "must be >= " + (descriptor.min ?? 0);
-          return;
-        }
-        normalized = String(n);
-      } else {
-        normalized = state.promptValue;
-      }
-
-      opts.onChange(field, normalized);
-      item.currentValue = normalized;
-      state.mode = "list";
-      state.promptField = null;
-      state.promptError = null;
-      // selectedIndex stays on the field.
-    } else if (matchesKey(data, Key.backspace)) {
-      if (state.promptValue.length > 0) {
-        state.promptValue = state.promptValue.slice(0, -1);
-        state.promptError = null;
-      }
-    } else if (isPromptTextChar(data)) {
-      const field = state.promptField;
-      const descriptor = field ? opts.prompts[field] : undefined;
-      if (!descriptor) return;
-      // Number fields accept digits only (matches the old submenu behavior).
-      if (descriptor.kind === "number" && !/^\d$/.test(data)) return;
-      state.promptValue += data;
-      state.promptError = null;
-    }
-    // Unmatched control/navigation input is swallowed in prompt mode;
-    // printable chars (including s, /) are appended as text.
-  }
-
-  function handleInput(data: string): void {
-    if (state.mode === "prompt") {
-      handlePromptInput(data);
-    } else {
-      handleListInput(data);
-    }
-  }
-
   return {
     render,
-    handleInput,
+    handleInput(data: string): void {
+      // While a field is open the list forwards every keystroke to it.
+      if (promptOpen) {
+        list.handleInput(data);
+      } else {
+        handleListInput(data);
+      }
+    },
 
     invalidate(): void {
-      // No-op — the component owns all of its state.
+      list.invalidate();
+      searchInput.invalidate();
     },
 
     dispose(): void {
