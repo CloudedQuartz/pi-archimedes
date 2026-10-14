@@ -25,6 +25,12 @@
 //    after session replacement or reload."), which a deferred emit — a socket
 //    callback, a child stream, a timer — can easily outlive. `emitOn` below is
 //    the contract the old bus gave for free: emitting never throws at you.
+// 3. **A subscriber's throw is the host's problem, not the emitter's.**
+//    `createEventBus()` wraps every handler in its own `try/catch` and prints
+//    `Event handler error (<channel>)` with `console.error`, so a listener
+//    failure never propagates back to whoever emitted — and never reaches our
+//    log file either. A listener with something worth keeping must report it
+//    through `diag()` itself. Pinned in `events-host-bus.test.ts`.
 
 import type { EventBus } from "@earendil-works/pi-coding-agent";
 import { diag, describeError } from "./log.js";
