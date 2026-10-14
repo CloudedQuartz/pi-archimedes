@@ -90,8 +90,17 @@ describe("formatColumns", () => {
 		const longItems = Array.from({ length: 20 }, (_, i) => `model-${i}`);
 		const sections = [{ name: "Models" as const, items: longItems }];
 		const result = formatColumns(sections, mockTheme, 40, mockRef);
-		// With narrow width, items should wrap to multiple lines
-		expect(result.length).toBeGreaterThan(1);
+		// Not just "more than one row" — that is true of the two-row section shape
+		// on its own, so it would still pass with the breaking removed. Every row
+		// has to fit the 40 columns it was asked for, and no value may be lost.
+		for (const line of result) {
+			expect(line.length).toBeLessThanOrEqual(40);
+		}
+		const all = result.join("\n");
+		for (const item of longItems) {
+			expect(all, `${item} was lost by the break`).toContain(item);
+		}
+		expect(result.length).toBeGreaterThan(2);
 	});
 
 	it("handles unrevealed state", () => {

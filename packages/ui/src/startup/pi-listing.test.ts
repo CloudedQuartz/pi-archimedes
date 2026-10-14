@@ -8,6 +8,7 @@ vi.hoisted(() => {
 });
 
 import { Theme, VERSION } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderHeader, modelScopeSection, type ListingRef } from "./index.js";
 import { LOGO } from "./logo.js";
 
@@ -208,5 +209,82 @@ describe("the intro rows follow pi's own listing recipe", () => {
     // The listing below it is not centred with it — pi writes its rows at column 1.
     expect(rows[LOGO.length + 1]).toBe(theme.fg("mdHeading", "[Version]"));
     expect(plain(rows[LOGO.length + 1]!)).toBe("[Version]");
+  });
+});
+
+// ── The rows have to fit the terminal they were asked for ───────────────────
+//
+// pi writes its own body as one long row and lets `ExpandableText` (a `Text`,
+// so word-wrapped at the frame width) absorb the overflow. Our header is a
+// plain component: a row wider than the frame is a row the terminal wraps under
+// us, mid-colour, which is the one way this block can still break. So the two
+// departures the recipe documents — values broken across rows, and a value
+// truncated rather than spilled — are asserted here on a narrow frame, through
+// the real `visibleWidth`/`truncateToWidth` the layout calls (the unit tests in
+// `sections.test.ts` stub those two, so they cannot see either rule).
+
+describe("the intro rows fit the frame", () => {
+  const theme = makeTheme();
+
+  /** Every row below the logo and its separator. */
+  const listing = (sections: ListingRef["sections"], width: number): string[] =>
+    renderHeader(theme, atRest(sections), width).slice(LOGO.length + 1);
+
+  // Each of these fits 40 columns on its own; the joined list does not, so the
+  // layout has to break it — pi's one-row-per-section shape, but across rows.
+  const threeModels = (): ListingRef["sections"] => [
+    { name: "Models", items: ["claude-sonnet-4-5", "gpt-5", "gemini-2.5-pro"] },
+  ];
+
+  it("breaks a value list that will not fit the frame, keeping every value", () => {
+    const rows = listing(threeModels(), 40);
+
+    expect(rows).toEqual([
+      theme.fg("mdHeading", "[Version]"),
+      theme.fg("dim", `  v${VERSION}`),
+      "",
+      theme.fg("mdHeading", "[Models]"),
+      // `  ` + "claude-sonnet-4-5, gpt-5, gemini-2.5-pro" is 42 columns at a
+      // 40-column frame, so the third value starts the next row.
+      theme.fg("dim", "  claude-sonnet-4-5, gpt-5"),
+      theme.fg("dim", "  gemini-2.5-pro"),
+    ]);
+
+    // Nothing is dropped on the way: every value is still on screen.
+    const all = rows.map(plain).join("\n");
+    for (const item of threeModels()[0]!.items) {
+      expect(all, `${item} was lost by the break`).toContain(item);
+    }
+  });
+
+  it("keeps every row of the block inside the frame, at any width", () => {
+    // Provider-prefixed ids with thinking levels are what `--model` scoping
+    // actually produces, and they are long enough to need every rule above.
+    const scoped = modelScopeSection(
+      [
+        { model: { id: "anthropic/claude-sonnet-4-5-20250929" }, thinkingLevel: "high" },
+        { model: { id: "openai/gpt-5-codex-mini" }, thinkingLevel: "minimal" },
+        { model: { id: "google/gemini-2.5-pro-exp-03-25" }, thinkingLevel: "xhigh" },
+        { model: { id: "x-ai/grok-4-fast-reasoning" } },
+        { model: { id: "deepseek/deepseek-r1-zero-671b" }, thinkingLevel: "low" },
+      ] as never,
+    )!;
+
+    for (const width of [200, 100, 80, 60, 40, 30, 20]) {
+      for (const row of renderHeader(theme, atRest([scoped]), width)) {
+        expect(visibleWidth(row), `width ${width}: ${JSON.stringify(plain(row))}`).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  it("truncates a single value wider than the frame instead of spilling past it", () => {
+    // One value cannot be broken, so it is cut with pi-tui's ellipsis: pi lets
+    // its expander deal with this case and we have no expander to hand it to.
+    const rows = listing([{ name: "Models", items: ["qwen3-max-preview-2026-10-14-nightly-build"] }], 40);
+    const body = rows.at(-1)!;
+
+    expect(visibleWidth(body)).toBe(40);
+    expect(plain(body)).toMatch(/\.\.\.$/);
+    expect(plain(body).startsWith("  qwen3-max")).toBe(true);
   });
 });

@@ -378,7 +378,8 @@ describe("header output per screen mode", () => {
   // does that for the whole tree on every theme change (`onThemeChange()` →
   // `ui.invalidate()`, interactive-mode.js:792) and from the theme file
   // watcher. So the hook exists, the cache has to honour it, and the cache key
-  // (width, height) cannot save it: a theme switch changes neither.
+  // (the width it was drawn at) cannot save it: a theme switch changes neither
+  // the width nor the lines' colours, so only `invalidate()` can tell them apart.
   it("drops its cached lines when pi invalidates it, so a theme change shows", () => {
     vi.useFakeTimers();
     let colour = "38;2;100;100;100";
