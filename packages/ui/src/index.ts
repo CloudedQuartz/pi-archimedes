@@ -17,7 +17,6 @@ import {
   revealStartupListing,
   stopStartupListing,
   modelScopeSection,
-  CONTENT_ONLY_HEIGHT,
   type ListingRef,
 } from "./startup/index.js";
 import type { ParsedSection } from "./startup/sections.js";
@@ -34,7 +33,6 @@ import {
   type UIConfig,
   type CoreConfig,
 } from "./config.js";
-import { screenCapabilities, screenMode } from "@pi-archimedes/core/screen-mode";
 import { reportPiSupport } from "@pi-archimedes/core/pi-support";
 import { getUISettingsItems } from "./settings.js";
 import { migrateCoreToUIConfig, migrateCompactThinkingToStyle, migrateRemovedToolPatch } from "./migration.js";
@@ -141,6 +139,8 @@ export function registerUI(pi: ExtensionAPI): void {
   pi.on("session_shutdown", (_event, ctx) => {
     const targetCtx = ctx?.hasUI ? ctx : uiCtx;
     if (targetCtx?.hasUI) {
+      // Give the working row back whichever way we left it: a session that
+      // started with the border spinner on had hidden it (`setWorkingVisible(false)`).
       targetCtx.ui.setWorkingVisible(true);
       // Give back everything the session borrowed: pi's animated indicator and
       // its own hidden-thinking wording, so a session that starts after this
@@ -216,36 +216,29 @@ export function registerUI(pi: ExtensionAPI): void {
         };
         const ref = uiRef;
         const headerFactory = (tui: TUI, theme: Theme): Component & { dispose(): void } => {
-          // Screen mode is asked of the renderer we were just handed, never
-          // cached in a module or a field (ADR 0027). Be exact about what that
-          // buys: pi calls this factory again whenever the header is replaced —
-          // a new session, `/reload` (which goes through `resetExtensionUI()`),
-          // or any `setHeader()`. It does *not* call it for a `tuiMode` switch:
-          // `switchTuiMode()` stops the old TUI, builds a new one and re-mounts
-          // the components it already has, and `customHeader` is only ever
-          // assigned in `setExtensionHeader()`. So the sizing decided here is
-          // the sizing that header keeps until the next replacement.
-          const caps = screenCapabilities(screenMode(tui));
+          // Nothing here is sized by the screen: pi calls this factory again
+          // whenever the header is replaced — a new session, `/reload` (which
+          // goes through `resetExtensionUI()`), or any `setHeader()` — and never
+          // for a `tuiMode` switch (`switchTuiMode()` re-mounts the components it
+          // already has), so a per-screen measurement taken here would be the
+          // measurement the header kept until the next replacement. The header
+          // does not need one: it renders its own content on either screen
+          // (`renderHeader`), which is both what keeps a frame-bounded viewport
+          // usable (ADR 0027) and what leaves pi's listing directly below it.
           const comp: Component & { dispose(): void } = {
             // pi invalidates the component tree on every theme change
             // (`onThemeChange()` → `ui.invalidate()`) and from the theme file
             // watcher, and the splash's cached lines carry the theme's colours
             // — so this is the hook that keeps a finished splash from rendering
             // yesterday's palette for the rest of the session. The cache key is
-            // the size it was drawn at, which a theme switch leaves alone.
+            // the width it was drawn at, which a theme switch leaves alone.
             // Only the memo goes: this is a repaint, not an animation restart.
             invalidate(): void {
               delete ref.cachedLines;
               delete ref.cachedWidth;
-              delete ref.cachedHeight;
             },
             render(width: number): string[] {
-              // Regular screen: sized to the terminal the splash scrolls
-              // through. Frame-bounded screen: the viewport owns the height, so
-              // the header gets its content and nothing more — padded to the
-              // terminal it would be the whole viewport, editor excluded.
-              const height = caps.frameBounded ? CONTENT_ONLY_HEIGHT : tui.terminal.rows - 3;
-              return renderHeader(theme, ref, width, height);
+              return renderHeader(theme, ref, width);
             },
             // pi disposes the header it is replacing before it builds the next
             // one (`setExtensionHeader()` disposes, then calls the factory), so
@@ -265,13 +258,30 @@ export function registerUI(pi: ExtensionAPI): void {
       }
 
       clearSpinInterval();
-      // pi's working row carries an animated indicator by default. When the
-      // border spinner is on, that animation would run twice, so the row is
-      // asked for no frames — it keeps showing what the agent is doing, in
-      // pi's own words, while the border carries the movement. Hiding the row
-      // wholesale (the old `setWorkingVisible(false)`) also took that message
-      // away, and on a `ctrl-o` screen it took the only sign of life.
-      ctx.ui.setWorkingIndicator(spinFlag ? { frames: [] } : undefined);
+      // One announcement, in one place. pi's working row writes "Working" above
+      // the editor and our border spinner writes its label — `editorSpinLabel`
+      // defaults to "Working" as well — into the editor's own top border, so with
+      // both on screen the word appeared twice. The border is ours, so the row is
+      // handed pi's own switch: hidden while the spinner runs, given back when it
+      // does not.
+      //
+      // `setWorkingVisible()` is official API (`types.d.ts:88`), and hiding the
+      // row is what makes the indicator configuration `#106` needed redundant:
+      // pi's `setWorkingVisible(false)` clears the working status indicator
+      // outright and its `turn_start` handler honours the flag
+      // (`interactive-mode.js:1819-1828`, `:2762-2769`), so there is no row left
+      // for a `frames: []` to silence. The indicator is still handed back to pi
+      // unconditionally, so the row a user *does* see is pi's default down to its
+      // spinner.
+      //
+      // Read per session rather than remembered: `editorSpinBorder` can change
+      // between sessions, and pi puts the row back on whenever it replaces the
+      // session (`resetExtensionUI()` → `workingVisible = true`, `:1921`). The
+      // toggle needs no keying on the `pi` handle the way a registration does —
+      // it is one idempotent setter call inside the `session_start` handler, and
+      // every handle gets its own handler.
+      ctx.ui.setWorkingVisible(!spinFlag);
+      ctx.ui.setWorkingIndicator(undefined);
 
       // The word a collapsed thinking block shows is pi's own row, so the
       // setting is handed to pi rather than rebuilt here. An empty setting

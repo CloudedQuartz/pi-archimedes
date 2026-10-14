@@ -279,22 +279,25 @@ describe("startup splash on either screen", () => {
     });
   }
 
-  it("re-reads the screen per install instead of caching the first renderer", () => {
-    // Same factory, renderer swapped underneath it. Note what pi actually
-    // re-invokes: `setExtensionHeader()` calls the factory again on `/reload`
-    // and on any `setHeader()` replacement. A `tuiMode` switch does *not* — it
-    // re-mounts the components it already has (`switchTuiMode()` never touches
-    // `customHeader`), which is why the header keeps the sizing of the screen
-    // it was installed on. That is pi's contract, not a choice here; the
-    // splash only promises to follow the renderer in hand at install time.
+  it("renders the same block on either screen, whatever renderer it is handed", () => {
+    // One splash is on screen at a time, so the two installs run in sequence —
+    // the way `/reload` or a new session replaces the header, each of which
+    // re-invokes the factory with the renderer now in hand. What the block is
+    // made of no longer depends on which renderer that is: it is its own content
+    // on both screens, so there is no per-screen sizing left to go stale when
+    // the renderer is swapped (ADR 0027's promise, in its strongest form).
+    vi.useFakeTimers();
+
     const regular = installSplash(false);
-    expect(regular.comp.render(WIDTH)).toHaveLength(ROWS - 3);
+    vi.advanceTimersByTime(5_000);
+    const regularLines = regular.comp.render(WIDTH);
 
     const viewport = installSplash(true);
-    expect(viewport.comp.render(WIDTH).length).toBeLessThan(ROWS - 3);
+    vi.advanceTimersByTime(5_000);
+    const viewportLines = viewport.comp.render(WIDTH);
 
-    const backToRegular = installSplash(false);
-    expect(backToRegular.comp.render(WIDTH)).toHaveLength(ROWS - 3);
+    expect(regularLines).toEqual(viewportLines);
+    expect(viewportLines.length).toBeLessThan(ROWS - 3);
   });
 });
 
@@ -341,28 +344,32 @@ describe("header output per screen mode", () => {
     const lines = settled(true);
 
     // The viewport allocates its own height, so the header is its own content:
-    // logo, separator, version block. `CONTENT_ONLY_HEIGHT` is what keeps it
-    // that way — padded to `rows - 3` it would be the whole screen.
+    // logo, separator, `[Version]`, version row. Padded to `rows - 3` it would
+    // be the whole screen and the editor would get nothing.
     expect(lines.length).toBe(LOGO.length + 3);
     expect(lines.length).toBeLessThan(ROWS - 3);
-    // Only the structural blanks: the separator under the logo and the spacer
-    // `formatColumns` puts under the version block. No centre-the-splash
-    // padding rows.
-    expect(lines.filter((l) => l === "")).toHaveLength(2);
+    // Only the structural blank: the separator under the logo. No centre-the-
+    // splash padding rows, and no trailing blank either — pi's header container
+    // already puts a `Spacer(1)` below the header and its resource listing
+    // opens with one more, so any blank we add here doubles pi's own gap.
+    expect(lines.filter((l) => l === "")).toHaveLength(1);
   });
 
   it("keeps a frame-bounded header the same height whatever the terminal rows", () => {
-    // The viewport owns the height, so the terminal must not leak into it —
-    // `CONTENT_ONLY_HEIGHT` means "content", not "content plus a guess".
+    // The viewport owns the height, so the terminal must not leak into it.
     expect(settled(true, 24)).toEqual(settled(true, 60));
   });
 
-  it("still sizes the header to the terminal on regular screen, where the splash scrolls away", () => {
-    vi.useFakeTimers();
-    const splash = installSplash(false);
-    vi.advanceTimersByTime(5_000);
+  it("does not pad the header to the terminal on regular screen either", () => {
+    // The splash used to be padded to `rows - 3` here, with a bias, so that the
+    // logo sat part-way down a screen of its own and pi's startup listing
+    // started below the padding. The maintainer's complaint is exactly that: the
+    // header and pi's listing read as two documents. pi's own header is one
+    // component of its own height, bracketed by spacers it owns; so is ours now.
+    const lines = settled(false);
 
-    expect(splash.comp.render(WIDTH)).toHaveLength(ROWS - 3);
+    expect(lines).toEqual(settled(true));
+    expect(lines.length).toBe(LOGO.length + 3);
   });
 
   // A finished splash caches its lines to avoid re-running the text layout on
@@ -371,7 +378,8 @@ describe("header output per screen mode", () => {
   // does that for the whole tree on every theme change (`onThemeChange()` →
   // `ui.invalidate()`, interactive-mode.js:792) and from the theme file
   // watcher. So the hook exists, the cache has to honour it, and the cache key
-  // (width, height) cannot save it: a theme switch changes neither.
+  // (the width it was drawn at) cannot save it: a theme switch changes neither
+  // the width nor the lines' colours, so only `invalidate()` can tell them apart.
   it("drops its cached lines when pi invalidates it, so a theme change shows", () => {
     vi.useFakeTimers();
     let colour = "38;2;100;100;100";

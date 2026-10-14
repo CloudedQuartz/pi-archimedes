@@ -65,18 +65,42 @@ describe("formatColumns", () => {
 		expect(result.some(line => line.includes("[Themes]"))).toBe(true);
 	});
 
-	it("adds blank line after Version section", () => {
+	it("separates two sections with one blank row, the way pi's Spacer(1) does", () => {
+		const sections = [
+			{ name: "Version" as const, items: ["1.0.0"] },
+			{ name: "Models" as const, items: ["gpt-5"] },
+		];
+		expect(formatColumns(sections, mockTheme, 80, mockRef)).toEqual([
+			"[Version]",
+			"  1.0.0",
+			"",
+			"[Models]",
+			"  gpt-5",
+		]);
+	});
+
+	it("adds no blank row after the last section: pi supplies the gap below the header", () => {
+		// pi brackets the header container with a Spacer and opens its resource
+		// listing with another, so a trailing blank here is a double gap.
 		const sections = [{ name: "Version" as const, items: ["1.0.0"] }];
-		const result = formatColumns(sections, mockTheme, 80, mockRef);
-		expect(result).toContain("");
+		expect(formatColumns(sections, mockTheme, 80, mockRef)).toEqual(["[Version]", "  1.0.0"]);
 	});
 
 	it("wraps items to new lines when exceeding width", () => {
 		const longItems = Array.from({ length: 20 }, (_, i) => `model-${i}`);
 		const sections = [{ name: "Models" as const, items: longItems }];
 		const result = formatColumns(sections, mockTheme, 40, mockRef);
-		// With narrow width, items should wrap to multiple lines
-		expect(result.length).toBeGreaterThan(1);
+		// Not just "more than one row" — that is true of the two-row section shape
+		// on its own, so it would still pass with the breaking removed. Every row
+		// has to fit the 40 columns it was asked for, and no value may be lost.
+		for (const line of result) {
+			expect(line.length).toBeLessThanOrEqual(40);
+		}
+		const all = result.join("\n");
+		for (const item of longItems) {
+			expect(all, `${item} was lost by the break`).toContain(item);
+		}
+		expect(result.length).toBeGreaterThan(2);
 	});
 
 	it("handles unrevealed state", () => {

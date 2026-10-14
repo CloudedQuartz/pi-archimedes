@@ -1,5 +1,5 @@
 import { VERSION, type ScopedModel, type Theme } from "@earendil-works/pi-coding-agent";
-import { getShinedLogo, LOGO_PAD, LOGO_SETTLE_FRAME } from "./logo.js";
+import { getShinedLogo, LOGO_SETTLE_FRAME } from "./logo.js";
 import { loadUIConfig } from "../config.js";
 import {
   formatColumns,
@@ -24,17 +24,6 @@ import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 // `ui/src/index.ts` decides *whether* to install this splash (quietStartup) and
 // what sections to reveal (the model scope); this module animates them.
 
-/**
- * Height to size the header against when there is no scrollback to pad into
- * (`renderHeader`'s `height`): the header renders exactly its own content.
- *
- * On regular screen the header is sized to the terminal because the splash is
- * about to be pushed through scrollback. A frame-bounded screen (fullscreen,
- * ADR 0027) allocates its own height, so padding to terminal rows would make
- * the header the whole viewport and leave the editor nothing.
- */
-export const CONTENT_ONLY_HEIGHT = 0;
-
 export interface ListingRef {
   sections: ParsedSection[];
   frame: number;
@@ -44,20 +33,38 @@ export interface ListingRef {
   settled: boolean;
   cachedLines?: string[];
   cachedWidth?: number;
-  cachedHeight?: number;
 }
 
-// ── renderHeader() — composes logo + sections + padding ────────────────
+// ── renderHeader() — composes logo + listing ───────────────────────────
 
-export function renderHeader(theme: Theme, ref: ListingRef, width: number, height: number): string[] {
-  const dim = (t: string) => theme.fg("dim", t);
+/**
+ * The splash's own text rows, drawn in pi's shape (`formatColumns`), under the
+ * animated logo. Everything the header is, and nothing else.
+ *
+ * The block is exactly its content on both screens, and that is deliberate
+ * twice over:
+ *
+ * - a frame-bounded (fullscreen) screen allocates the height itself (ADR 0027),
+ *   so a header padded to the terminal would be the whole viewport and the
+ *   editor would get nothing — the reason #97/#102 sized it to content;
+ * - on regular screen the padding was the defect the maintainer pointed at.
+ *   pi's header container puts a `Spacer(1)` above and below whatever header is
+ *   installed (`interactive-mode.js:764-766`) and its resource listing opens
+ *   with one more, so a header padded to `rows - 3` pushed pi's own listing a
+ *   screen down and left the two halves of the intro reading as two documents.
+ *
+ * Nothing here is sized by the screen any more, which is also why the header
+ * factory no longer asks the renderer which screen it is on: there is no
+ * per-screen measurement left to take and nothing per-screen left to go stale.
+ */
+export function renderHeader(theme: Theme, ref: ListingRef, width: number): string[] {
   const cfg = loadUIConfig();
   const logoLines = getShinedLogo(ref.frame, cfg.animationStyle, cfg.colorfulLogo);
 
   // Use cached text lines if settled (no more animations)
   let listingLines: string[];
 
-  if (ref.settled && ref.cachedLines && ref.cachedWidth === width && ref.cachedHeight === height) {
+  if (ref.settled && ref.cachedLines && ref.cachedWidth === width) {
     listingLines = ref.cachedLines;
   } else {
     const sectionsToRender: ParsedSection[] = [];
@@ -79,8 +86,9 @@ export function renderHeader(theme: Theme, ref: ListingRef, width: number, heigh
       }
     }
 
-    const listingMaxW = Math.floor(width * 0.7);
-    listingLines = formatColumns(sectionsToRender, theme, listingMaxW, ref);
+    // pi writes its listing rows across the frame, so the rows break at the
+    // frame edge rather than at some narrower column of ours.
+    listingLines = formatColumns(sectionsToRender, theme, width, ref);
 
     // Cache once text animations are done
     const textAge = ref.revealed ? ref.frame - ref.revealedAt : 0;
@@ -91,45 +99,26 @@ export function renderHeader(theme: Theme, ref: ListingRef, width: number, heigh
       ref.settled = true;
       ref.cachedLines = listingLines;
       ref.cachedWidth = width;
-      ref.cachedHeight = height;
     }
   }
 
   // Build content: logo + separator + listing
   const contentLines: string[] = [];
 
-  // Logo centered above listing (same center as listing text)
-  const listingMaxW = Math.floor(width * 0.7);
-  const listingLeftPad = Math.floor((width - listingMaxW) / 2);
+  // Logo centred across the frame — the top half of the intro, unchanged.
   for (const logoRow of logoLines) {
-    const pad = Math.floor((listingMaxW - visibleWidth(logoRow)) / 2);
-    contentLines.push(" ".repeat(LOGO_PAD) + " ".repeat(listingLeftPad + pad) + logoRow);
+    const pad = Math.max(0, Math.floor((width - visibleWidth(logoRow)) / 2));
+    contentLines.push(" ".repeat(pad) + logoRow);
   }
 
   // Separator
   contentLines.push("");
 
-  // Listing
-  for (const listRow of listingLines) {
-    contentLines.push(" ".repeat(LOGO_PAD) + " ".repeat(listingLeftPad) + listRow);
-  }
+  // Listing, at column 1: pi's rows start there, and anything indenting ours
+  // past it is what made the two halves look unrelated.
+  for (const listRow of listingLines) contentLines.push(listRow);
 
-  // Pad top and bottom to fill height (+5 top bias for visual centering).
-  // The bias only applies when there is something to distribute: with no
-  // height left over (`CONTENT_ONLY_HEIGHT` on a frame-bounded screen) the
-  // header is its own content and must not gain stray blank rows.
-  const VERTICAL_CENTER_BIAS = 5; // Shift content slightly upward for visual balance
-  const contentHeight = contentLines.length;
-  const remaining = Math.max(0, height - contentHeight);
-  const topPad = remaining > 0 ? Math.floor(remaining / 2) + VERTICAL_CENTER_BIAS : 0;
-  const bottomPad = remaining - topPad;
-
-  const result: string[] = [];
-  for (let i = 0; i < topPad; i++) result.push("");
-  for (const line of contentLines) result.push(line);
-  for (let i = 0; i < bottomPad; i++) result.push("");
-
-  return result;
+  return contentLines;
 }
 
 // ── The section the splash is allowed to know about ───────────────────────
@@ -232,7 +221,6 @@ export function patchStartupListing(tui: TUI, ref: ListingRef): void {
   ref.settled = false;
   delete ref.cachedLines;
   delete ref.cachedWidth;
-  delete ref.cachedHeight;
 
   startFrameTimer(tui, ref);
 }
@@ -262,7 +250,6 @@ export function revealStartupListing(
     ref.settled = false;
     delete ref.cachedLines;
     delete ref.cachedWidth;
-    delete ref.cachedHeight;
     tui.requestRender();
     if (!frameTimer) startFrameTimer(tui, ref);
   }, REVEAL_DEBOUNCE_MS);

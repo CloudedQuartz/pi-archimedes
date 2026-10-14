@@ -21,7 +21,6 @@ import {
 	stopStartupListing,
 	renderHeader,
 	modelScopeSection,
-	CONTENT_ONLY_HEIGHT,
 	type ListingRef,
 } from "./index.js";
 import { LOGO, LOGO_SETTLE_FRAME } from "./logo.js";
@@ -60,7 +59,7 @@ describe("renderHeader section set", () => {
 	// The rendered set is whatever the caller revealed into the ref — pi decides
 	// which of its own sections exist, so nothing here may assert a fixed list.
 	const linesFor = (sections: ListingRef["sections"]): string[] =>
-		renderHeader(THEME, { ...makeRef(), sections }, 200, 60);
+		renderHeader(THEME, { ...makeRef(), sections }, 200);
 
 	it("renders revealed sections in the order they were given", () => {
 		const lines = linesFor([
@@ -111,13 +110,13 @@ describe("renderHeader section set", () => {
 
 describe("renderHeader version block", () => {
 	it("states the running pi version", () => {
-		const lines = renderHeader(THEME, makeRef(), 200, 60);
+		const lines = renderHeader(THEME, makeRef(), 200);
 		expect(lines.some((l) => l.includes("[Version]"))).toBe(true);
 		expect(lines.some((l) => l.includes(`v${VERSION}`))).toBe(true);
 	});
 
 	it("has no Latest row and asks no update question", () => {
-		const lines = renderHeader(THEME, makeRef(), 200, 60);
+		const lines = renderHeader(THEME, makeRef(), 200);
 		expect(lines.join("\n")).not.toContain("Latest");
 		expect(lines.join("\n")).not.toContain("Local:");
 	});
@@ -178,7 +177,7 @@ describe("patchStartupListing animation timer", () => {
 		const { tui, requestRender } = makeTui();
 		const ref: ListingRef = { ...makeRef(), revealed: false };
 		// Real renders settle the listing, which is what stops the restarted timer
-		requestRender.mockImplementation(() => renderHeader(THEME, ref, 200, 60));
+		requestRender.mockImplementation(() => renderHeader(THEME, ref, 200));
 		patchStartupListing(tui, ref);
 		vi.advanceTimersByTime(3_000);
 
@@ -259,7 +258,7 @@ describe("startup splash side effects", () => {
 		const ref = makeRef();
 		patchStartupListing(tui, ref);
 		revealStartupListing(tui, ref, [{ name: "Models", items: ["m"] }]);
-		renderHeader(THEME, ref, 200, CONTENT_ONLY_HEIGHT);
+		renderHeader(THEME, ref, 200);
 		await Promise.resolve();
 
 		expect(fetch).not.toHaveBeenCalled();
@@ -275,7 +274,7 @@ describe("renderHeader at rest", () => {
 	it("renders the logo at rest with no listing and no stray blank rows", () => {
 		const ref: ListingRef = { ...makeRef(), frame: LOGO_SETTLE_FRAME, revealed: false };
 
-		const lines = renderHeader(THEME, ref, 200, CONTENT_ONLY_HEIGHT);
+		const lines = renderHeader(THEME, ref, 200);
 
 		// Logo rows plus their separator — and, unlike frame 0, actually drawn.
 		// (Stripped: a truecolor logo colours each block character separately.)
