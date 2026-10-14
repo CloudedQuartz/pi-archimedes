@@ -278,22 +278,31 @@ describe("subscription lifecycle", () => {
    */
   it("three generations subscribe once, deliver once, and leave nothing behind", () => {
     const buses = [fakeBus(), fakeBus(), fakeBus()];
+    const channels = [
+      Events.COST_UPDATE,
+      Events.TODOS_UPDATE,
+      Events.TODOS_CLEAR,
+      Events.ASK_REQUEST,
+      Events.ASK_RESPONSE,
+      Events.ASK_CANCEL,
+    ];
     for (const bus of buses) {
       // Twice, because pi really does fire `session_start` twice for one
       // replacement in RPC mode (`setRebindSession` + rpc-mode's own rebind).
       start(bus);
       start(bus);
-      expect(bus.listenerCount(Events.COST_UPDATE)).toBe(1);
-      expect(bus.listenerCount(Events.ASK_REQUEST)).toBe(1);
-      expect(bus.listenerCount(Events.ASK_RESPONSE)).toBe(1);
-      expect(bus.listenerCount(Events.ASK_CANCEL)).toBe(1);
-      expect(bus.listenerCount(Events.TODOS_UPDATE)).toBe(1);
-      expect(bus.listenerCount(Events.TODOS_CLEAR)).toBe(1);
+      // Every channel the relay opens is counted, not just one: a teardown that
+      // forgets a single channel is otherwise invisible to this file.
+      for (const channel of channels) expect(bus.listenerCount(channel)).toBe(1);
       sent.length = 0;
       bus.emit(Events.COST_UPDATE, COST);
       expect(sent).toHaveLength(1);
       stop();
-      for (const other of buses) expect(other.listenerCount(Events.COST_UPDATE)).toBe(0);
+      // And every channel is closed again — on every handle, so a dropped
+      // unsubscribe cannot hide on the bus the generation just left.
+      for (const other of buses) {
+        for (const channel of channels) expect(other.listenerCount(channel)).toBe(0);
+      }
     }
   });
 });
