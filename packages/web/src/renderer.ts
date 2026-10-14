@@ -135,6 +135,17 @@ export function renderGetSearchContentResult(result: unknown, options: { expande
       text.setText(renderStatusLabel("error", sanitizeStatus("No details"), theme));
       return text;
     }
+
+    // A failed lookup (`Response not found`) is reported with `isError`, and pi
+    // hands a renderer only `{ content, details }` — the flag itself is not in
+    // what this function is given (`modes/interactive/components/
+    // tool-execution.js:243`) — so `details.error` is what a row can read. Without
+    // this branch the row said “✓ Content retrieved” for a call that retrieved
+    // nothing, and expanding said “No content found”.
+    if (details.error) {
+      text.setText(renderStatusLabel("error", sanitizeStatus(details.error), theme));
+      return text;
+    }
     
     if (options?.expanded) {
       text.setText(sanitizeExpanded(details.matches ? details.matches.map((m: any) => m.passage).join("\n\n") : (details.content ?? "No content found")));
