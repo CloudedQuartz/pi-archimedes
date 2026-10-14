@@ -46,7 +46,8 @@ the generated snippet is checked against that published schema.
 > only half of handing the key back: while image-paste registers a shortcut for
 > the same key, Pi keeps the shortcut and the restored native binding never
 > runs, so `registerImagePaste` registers nothing while the setting is off.
-> See `docs/roadmap/pi-1-x-alignment.md` Task 12 item 2b and ADR 0030.
+> See ADR 0030 (`docs/decisions/0030-image-paste-superset-not-supplement.md`) and
+> the package-facing write-up in `docs/features/image-paste.md`.
 
 ## Gates (evaluated in order)
 
