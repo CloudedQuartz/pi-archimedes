@@ -35,6 +35,7 @@ import {
   SettingsList,
   decodeKittyPrintable,
   getKeybindings,
+  matchesKey,
   type Component,
   type SettingItem,
   type SettingsListTheme,
@@ -332,7 +333,9 @@ export function createSettingsManager(opts: SettingsManagerOptions): {
       stepValue(1);
       return;
     }
-    if (data === "/") {
+    // `matchesKey`, not `data === "/"`: a terminal with the Kitty keyboard
+    // protocol enabled sends printable keys as CSI-u (`/` arrives as `\x1b[47u`).
+    if (matchesKey(data, "/")) {
       // Re-pressing while active is a no-op, not a character.
       searchArmed = true;
       return;
@@ -343,13 +346,16 @@ export function createSettingsManager(opts: SettingsManagerOptions): {
         refilter();
         return;
       }
-      if (isAsciiPrintable(data)) {
-        searchInput.handleInput(data);
+      // Decoded first, so the query is typeable on a CSI-u terminal too (a bare
+      // comparison saw `\x1b[115u` as nothing at all, so nothing could be typed).
+      const typed = decodeKittyPrintable(data) ?? data;
+      if (isAsciiPrintable(typed)) {
+        searchInput.handleInput(typed);
         refilter();
         return;
       }
     }
-    if (data === "s" && !searchArmed) {
+    if (matchesKey(data, "s") && !searchArmed) {
       opts.onSave();
       return;
     }

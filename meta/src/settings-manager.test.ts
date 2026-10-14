@@ -386,6 +386,29 @@ describe("search", () => {
     expect(h.drawn()).toContain("No matching settings");
   });
 
+  it("arms on a Kitty CSI-u / as well as a bare one", async () => {
+    // A terminal with the Kitty keyboard protocol enabled sends printable keys as
+    // CSI-u (`/` arrives as `\x1b[47u`), which main matched through `matchesKey`.
+    const items = await realItems();
+    const h = createHarness(items);
+    h.press("\x1b[47u");
+    expect(h.row("Search:")).toBe("Search:");
+  });
+
+  it("types a CSI-u encoded query", async () => {
+    const items = await realItems();
+    const h = createHarness(items);
+    h.press("/");
+    h.press("\x1b[115u"); // s
+    h.press("\x1b[112u"); // p
+    h.press("\x1b[105u"); // i
+    h.press("\x1b[110u"); // n
+    expect(h.row("Search:")).toBe("Search: spin");
+    expect(h.drawn()).toContain("Spin Speed");
+    // And it did not save on the way (\x1b[115u is `s`).
+    expect(h.saves).toBe(0);
+  });
+
   it("edits the query with backspace", async () => {
     const items = await realItems();
     const h = createHarness(items);
@@ -462,6 +485,15 @@ describe("save and close keys", () => {
     h.press("s");
     expect(h.saves).toBe(1);
     expect(h.closes).toBe(0);
+  });
+
+  it("saves on a Kitty CSI-u s, and not on a capital S", async () => {
+    const items = await realItems();
+    const h = createHarness(items);
+    h.press("\x1b[115u"); // s, CSI-u encoded
+    expect(h.saves).toBe(1);
+    h.press("S");
+    expect(h.saves).toBe(1);
   });
 
   it("does nothing on other letters in the list", async () => {
