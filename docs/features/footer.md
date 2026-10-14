@@ -1,14 +1,14 @@
 ---
 status: live
 last-verified: 2026-10-14
-verified-by: reading `packages/footer/src` (index.ts, utils/stats.ts, utils/git.ts, utils/jj.ts, utils/format.ts, utils/layout.ts, utils/icons.ts, config.ts) against pi 1.2.0's own built-in footer (`dist/modes/interactive/components/footer.js`) and its examples `custom-footer.ts`, `status-line.ts` and `model-status.ts`, claim by claim, on 2026-10-14; the suite's tests (`npx vitest run` — 2430 tests / 145 files, including `cost-source.test.ts`, `stats.test.ts`, `git.test.ts`, `jj.test.ts`, `layout.test.ts`, `format.test.ts`, `render-smoke.test.ts`) and `tsc --noEmit` clean in all 13 workspace projects. Not verified in this pass: on-screen rendering at assorted widths (see "Not verified in this pass").
+verified-by: reading `packages/footer/src` (index.ts, utils/stats.ts, utils/git.ts, utils/jj.ts, utils/format.ts, utils/layout.ts, utils/icons.ts, config.ts) against pi 1.2.0's own built-in footer (`dist/modes/interactive/components/footer.js`, with `setExtensionStatus`/`getExtensionStatuses` in `dist/core/footer-data-provider.js` and the slot itself in `setExtensionFooter`, `dist/modes/interactive/interactive-mode.js`) and its examples `custom-footer.ts`, `status-line.ts` and `model-status.ts`, claim by claim, on 2026-10-14; the suite's tests (`npx vitest run` — 2430 tests / 145 files, including `cost-source.test.ts`, `stats.test.ts`, `git.test.ts`, `jj.test.ts`, `layout.test.ts`, `format.test.ts`, `render-smoke.test.ts`) and `tsc --noEmit` clean in all 13 workspace projects. Not verified in this pass: on-screen rendering at assorted widths (see "Not verified in this pass").
 ---
 
 # Footer (`@pi-archimedes/footer`)
 
 pi's status-bar slot, replaced by a layout that survives a narrow terminal: `dir | branch [+git status] | worktree | model | thinking | extension statuses | ↑ ↓ R W $cost ━ context%`.
 
-It is installed through pi's own mechanism — `ctx.ui.setFooter(factory)` at `session_start` — so it is a takeover of one slot, not an extra line, and `session_shutdown` cleans up its subscriptions.
+It is installed through pi's own mechanism — `ctx.ui.setFooter(factory)` at `session_start` — which is a takeover of one slot, not an extra line: `setExtensionFooter` clears the footer container and adds only the extension's component, so pi's own `FooterComponent` is not drawn alongside it. Its two subscriptions are released on the way out separately — the branch-change one when pi disposes the footer component (`dispose()`), the git/jj change listener at `session_shutdown`.
 
 ## Almost every number here is pi's own data
 
@@ -35,7 +35,7 @@ Four things on screen have no pi equivalent, plus the layout:
 - **The context bar.** `formatContextBar()` draws `icon ━━━━ N%` into whatever columns remain on the last line, coloured at ≥90 % and ≥70 % (`packages/footer/src/utils/format.ts`). Alongside it the stats section prints used-vs-window tokens, `formatTokenCount(used) + "/" + formatTokenCount(window)`. This is consumption, not headroom.
 - **Adaptive packing.** `packFooterLines()` (`packages/footer/src/utils/layout.ts`) treats every section as atomic and wraps rather than truncating: one line if everything fits, two when the tail no longer does, three or more when the left sections alone overflow. Below `splitThreshold` (default 150 columns) it forces at least the two-line split. Oversized extension statuses are word-wrapped into chunks (`wrapStatusToChunks`) instead of being cut.
 
-Both VCS probes are cached with a short TTL and refreshed in the background so a render never blocks on a subprocess; when a reply changes what the footer shows, it asks pi for a frame (`onVcsChange` → `tui.requestRender()`).
+Both VCS probes are cached with a short TTL (2 s) and, once warm, refreshed in the background so a render does not wait on a subprocess — but the *first* probe of a session is deliberately synchronous (`getGitStatus()` and `getJjBookmark()` take the blocking path "so the first render is correct"), so the first frame can pay up to that probe's 2 s timeout. When a reply changes what the footer shows, it asks pi for a frame (`onVcsChange` → `tui.requestRender()`).
 
 If the render throws, the failure is logged through the suite's diagnostics (`diag("footer", …)`, never `console.*` — `docs/features/ui.md`) and the user is told once per session that the status bar is empty.
 
@@ -62,14 +62,18 @@ Against that baseline, ours changes presentation and repository awareness, and g
 | jj repositories | not represented | bookmark (or `@<change-id>`) + jj changed-file count |
 | Worktrees | not represented | distinct glyph for a linked worktree |
 | Git state | name only | staged / unstaged / untracked / ahead / behind counts |
-| Context | `NN.N%/window`, coloured | `used/window` **plus** a bar that fills the remaining columns |
+| Directory | full cwd, with `~` for home | last path segment only |
+| Context | `NN.N%/window`, coloured error/warning above 90 %/70 % | `used/window`, coloured above 95 %/80 %, **plus** a bar that fills the remaining columns, coloured at ≥90 %/≥70 % |
 | Session name | shown after cwd | not shown |
 | Cache-hit rate `CHxx.x%` | shown | not shown |
 | ` (sub)`, ` (auto)`, `xp`, routed-model `→ x`, `(provider)` prefix | shown | not shown |
 | Cost precision | 3 decimals | 2 decimals |
+
+**What pi has that ours does not.** The last four rows are the list, stated plainly: our footer shows no session name, no `CHxx.x%` cache-hit rate, no `(sub)` / `(auto)` / `xp` marker, no `→ routed-model` suffix, no `(provider)` prefix, two decimals of cost where pi prints three, and only the last segment of the working directory where pi prints the whole path. None of it is out of reach — `footerData.getAvailableProviderCount()` and `sessionManager.getSessionName()` are the same host APIs an extension is given — these are simply things this layout does not draw. And because the slot is taken over rather than appended to, a reader who wants the cache-hit rate or the routed-model target while a subagent fan-out is running cannot fall back to pi's own footer for it; that visibility is gone for as long as this footer is installed.
 
 ## Not verified in this pass
 
 - No screen capture at a spread of widths for this doc. The packing rule is asserted by `packages/footer/src/utils/layout.test.ts` and the pieces by `format.test.ts` / `render-smoke.test.ts`; how a specific terminal's width resolves into 1/2/3 lines was not re-observed here.
 - Live jj behaviour. `jj.ts` asserts its command and output parsing in `jj.test.ts`; no jj repository was driven for this doc, and the changed-file count's staleness note (the count comes from the last snapshot, so it lags until jj snapshots) is quoted from the source comment, not measured.
 - `getGitStatus()`'s ahead/behind against a real remote — read from `packages/footer/src/utils/git.ts`, not exercised here.
+- The "first probe blocks, later ones do not" claim is read from the two source files (`getGitStatus()`'s first-call branch, `getJjBookmark()`'s `execFileSync` with a 2 s timeout) and from `git.test.ts` / `jj.test.ts` for the parsing; no timing was measured for this doc, so "up to that probe's 2 s timeout" is the configured ceiling, not an observation.
