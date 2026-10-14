@@ -42,6 +42,8 @@ interface Harness {
   queue: ImageQueue;
   editor: Editor;
   inserted: string[];
+  /** Drafts the editor submitted (Enter) — a clipboard must never cause one. */
+  submitted: string[];
   notifications: Array<[string, string | undefined]>;
 }
 
@@ -50,6 +52,10 @@ function createHarness(options?: { editorText?: string }): Harness {
     { requestRender: () => {}, terminal: { rows: 40, cols: 120 } } as unknown as TUI,
     { borderColor: (s: string) => s, selectList: {} } as unknown as EditorTheme,
   );
+  const submitted: string[] = [];
+  editor.onSubmit = (text: string) => {
+    submitted.push(text);
+  };
   if (options?.editorText) {
     editor.setText(options.editorText);
   }
@@ -70,7 +76,7 @@ function createHarness(options?: { editorText?: string }): Harness {
     },
   } as unknown as ExtensionContext;
 
-  return { ctx, queue: createImageQueue(), editor, inserted, notifications };
+  return { ctx, queue: createImageQueue(), editor, inserted, submitted, notifications };
 }
 
 function editorText(h: Harness): string {
@@ -313,6 +319,105 @@ describe("dispatchClipboardPaste: pi's path branch details", () => {
 
     expect(h.inserted).toEqual([" /tmp/x.txt"]);
     expect(editorText(h)).toBe("alph /tmp/x.txta");
+  });
+});
+
+describe("dispatchClipboardPaste: clipboard text that is not plain text", () => {
+  // The text branch hands the clipboard to `ctx.ui.pasteToEditor`, which is
+  // pi's bracketed-paste wiring (`editor.handleInput("\x1b[200~" + text +
+  // "\x1b[201~")`, interactive-mode.js:2075). pi-tui ends a paste at the first
+  // `\x1b[201~` it finds and re-feeds the remainder of the chunk to
+  // `handleInput` (components/editor.js:569-590), so an escape byte that came
+  // *from the clipboard* ends the paste early — and the tail of the clipboard
+  // is lost or reinterpreted. pi's own text branch cannot lose it: it writes
+  // bytes with `insertTextAtCursor` (:2528). These cases pin what the
+  // available insert route does with the payloads that difference separates.
+  const withText = (text: string): void => {
+    mockReadClipboardImage.mockResolvedValue(null);
+    mockReadClipboardFilePaths.mockResolvedValue(null);
+    mockReadClipboardText.mockResolvedValue(text);
+  };
+
+  it("keeps the whole clipboard when it carries a paste-framing escape sequence", async () => {
+    const h = createHarness();
+    withText("hi\u001b[201~!echo pwned\r");
+
+    await dispatchClipboardPaste(h.ctx, h.queue);
+
+    // Measured without the fix: the draft ended up as "hi\n" — everything
+    // after the escape byte was swallowed by the paste-boundary break, which
+    // pi does not do for the same clipboard.
+    const draft = editorText(h);
+    expect(draft).toContain("hi");
+    expect(draft).toContain("echo pwned");
+    expect(draft).not.toContain("\u001b");
+    // And the break must not reach the editor as a keystroke: the draft is
+    // inserted, never submitted.
+    expect(h.submitted).toEqual([]);
+    expect(h.notifications).toEqual([]);
+  });
+
+  it("keeps the visible text of a payload with a bare escape byte", async () => {
+    const h = createHarness();
+    withText("hi\u001b[31mred");
+
+    await dispatchClipboardPaste(h.ctx, h.queue);
+
+    // The escape byte goes (pi keeps it raw — it can, we cannot); no other
+    // character is lost, and the parameter tail stays as the plain text it is.
+    expect(editorText(h)).toBe("hi[31mred");
+    expect(h.submitted).toEqual([]);
+  });
+
+  it("drops NUL and BEL the way a terminal paste does, and inserts the rest", async () => {
+    const h = createHarness();
+    withText("hi\u0000wo\u0007");
+
+    await dispatchClipboardPaste(h.ctx, h.queue);
+
+    // pi-tui's own paste filter removes characters below 0x20 except \n
+    // (components/editor.js:1070-1074), so the buffer is clean without the
+    // dispatch having to pre-filter — the divergence from pi here is that pi
+    // stores the raw bytes ("hi\u0000wo\u0007") and we do not.
+    expect(editorText(h)).toBe("hiwo");
+    expect(h.editor.getText()).not.toMatch(/[\u0000-\u0008\u000b-\u001f]/);
+  });
+
+  it("normalises CRLF and a trailing CR to newlines, as pi's insert route does", async () => {
+    const h = createHarness();
+    withText("a\r\nb\r");
+
+    await dispatchClipboardPaste(h.ctx, h.queue);
+
+    // normalizeText in pi-tui (components/editor.js:953-955) is shared by both
+    // insert routes, so the two agree here: measured "a\nb\n" either way.
+    expect(editorText(h)).toBe("a\nb\n");
+  });
+
+  it("keeps a trailing newline rather than trimming it, as pi does", async () => {
+    const h = createHarness({ editorText: "summarise " });
+    withText("hello\n");
+
+    await dispatchClipboardPaste(h.ctx, h.queue);
+
+    // pi inserts the clipboard verbatim (:2528) and a trailing newline from
+    // xclip/xsel (no --no-newline in pi's candidate for X11) is part of it.
+    expect(editorText(h)).toBe("summarise hello\n");
+  });
+
+  it("collapses a 1MB clipboard to the editor's paste marker and submits the whole thing", async () => {
+    const h = createHarness();
+    const oneMb = "line of text\n".repeat(80_000); // ~1.04 MB
+    withText(oneMb);
+
+    await dispatchClipboardPaste(h.ctx, h.queue);
+
+    // The draft shows the marker; what pi submits is the expanded text, so no
+    // character is lost — measured against the same payload through pi's
+    // insertTextAtCursor route, which holds it inline instead.
+    expect(h.editor.getText()).toMatch(/^\[paste #1 \+\d+ lines\]$/);
+    expect(editorText(h)).toBe(oneMb);
+    expect(h.submitted).toEqual([]);
   });
 });
 

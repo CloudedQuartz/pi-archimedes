@@ -510,6 +510,33 @@ export async function readClipboardText(options?: {
   }
 }
 
+/**
+ * Clipboard text prepared for `ctx.ui.pasteToEditor`.
+ *
+ * `pasteToEditor` is not an insert: it is pi's bracketed-paste wiring,
+ * `this.editor.handleInput("\x1b[200~" + text + "\x1b[201~")`
+ * (`dist/modes/interactive/interactive-mode.js:2075`). pi-tui ends a paste at
+ * the first `\x1b[201~` it finds and re-feeds the rest of the chunk to
+ * `handleInput` as if it had been typed
+ * (`pi-tui/dist/components/editor.js:569-590`), so an escape byte arriving
+ * *from the clipboard* closes the paste early: measured, the payload
+ * `"hi\u001b[201~!echo pwned\r"` left the draft holding `"hi\n"` — the rest of
+ * the clipboard gone. pi's own text branch cannot lose it, because it writes
+ * bytes with `insertTextAtCursor` (`interactive-mode.js:2528`), and the
+ * extension API exposes no insert route — `pasteToEditor` is the only way in.
+ *
+ * So the framing byte is dropped from clipboard content and everything else
+ * is preserved verbatim. The remaining control characters need no handling
+ * here: pi-tui's paste filter already removes characters below 0x20 except
+ * `\n` and normalises line endings (`editor.js:1069-1074`, `:953-955`), which
+ * is the same treatment a paste typed at the terminal gets. (The divergence
+ * from pi is that pi *stores* those bytes; measured, pi keeps
+ * `"hi\u0000wo\u0007"` where this route gives `"hiwo"`.)
+ */
+export function clipboardTextForEditor(text: string): string {
+  return text.includes("\u001b") ? text.replace(/\u001b/g, "") : text;
+}
+
 // ── pi's path-insertion spacing rule ────────────────────────────────────────
 
 /** Where the editor cursor sits, in the same shape pi's `getCursor()` returns. */

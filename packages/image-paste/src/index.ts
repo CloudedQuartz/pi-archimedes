@@ -4,7 +4,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import type { KeyId } from "@earendil-works/pi-tui";
 
-import { readClipboardFilePaths, readClipboardImage, readClipboardText, buildPathInsertion } from "./clipboard.js";
+import {
+  buildPathInsertion,
+  clipboardTextForEditor,
+  readClipboardFilePaths,
+  readClipboardImage,
+  readClipboardText,
+} from "./clipboard.js";
 import { registerImagePreview, sendPreviewMessage } from "./preview.js";
 import type { ClipboardImage, PendingImage, ImageMarker } from "./types.js";
 
@@ -127,10 +133,12 @@ export async function dispatchClipboardPaste(
       return;
     }
 
-    // 3. Plain text.
+    // 3. Plain text, prepared for the bracketed-paste route `pasteToEditor`
+    //    takes (see `clipboardTextForEditor`: an escape byte from the clipboard
+    //    would otherwise end the paste and lose the rest of it).
     const text = await readClipboardText();
     if (text) {
-      ctx.ui.pasteToEditor(text);
+      ctx.ui.pasteToEditor(clipboardTextForEditor(text));
       return;
     }
 

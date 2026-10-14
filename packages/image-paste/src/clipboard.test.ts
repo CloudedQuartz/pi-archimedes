@@ -38,6 +38,7 @@ vi.mock("@pi-archimedes/core/log", async (importOriginal) => {
 
 import {
   buildPathInsertion,
+  clipboardTextForEditor,
   isImageFilePath,
   readClipboardFilePaths,
   readClipboardImage,
@@ -552,6 +553,26 @@ describe("isImageFilePath", () => {
       expect(isImageFilePath(filePath)).toBe(false);
     },
   );
+});
+
+describe("clipboardTextForEditor: what may go through pasteToEditor", () => {
+  // `ctx.ui.pasteToEditor` is a bracketed paste (interactive-mode.js:2075), so
+  // the paste framing is the one thing clipboard content must not carry: pi-tui
+  // ends the paste at the first `\x1b[201~` (components/editor.js:576-587) and
+  // the rest of the clipboard is lost. Measured end-to-end in
+  // paste-dispatch.test.ts; this is the pure rule.
+  it("drops the escape byte that would close the paste early, keeping the rest", () => {
+    expect(clipboardTextForEditor("hi\u001b[201~!echo pwned\r")).toBe("hi[201~!echo pwned\r");
+  });
+
+  it("drops a bare escape byte and leaves every other character alone", () => {
+    expect(clipboardTextForEditor("hi\u001b[31mred")).toBe("hi[31mred");
+  });
+
+  it("returns ordinary text (including newlines and tabs) untouched", () => {
+    const ordinary = "two lines\nand a\ttab, a NUL \u0000 and a trailing newline\n";
+    expect(clipboardTextForEditor(ordinary)).toBe(ordinary);
+  });
 });
 
 describe("buildPathInsertion: pi's spacing rule (interactive-mode.js:2504-2511)", () => {
