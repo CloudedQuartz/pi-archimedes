@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-10-14
-verified-by: reading `packages/subagent/src` (index.ts, tool-schema.ts, spawn.ts, stream.ts, execute.ts, run-outcome.ts, usage.ts, agents.ts, agent-store.ts, local-config.ts, agent-panel.ts, dispatch.ts) against pi 1.2.0's shipped `examples/extensions/subagent/` (index.ts, agents.ts, README.md), claim by claim, on 2026-10-14; the suite's tests (`npx vitest run` — 2430 tests / 145 files, including `run-outcome.test.ts`, `usage.test.ts`, `spawn.test.ts`, `dispatch.test.ts`, `local-config.test.ts`, `tool-validation.test.ts`, `agents-parse.test.ts`) and `tsc --noEmit` clean in all 13 workspace projects. Not verified in this pass: a live dispatch (see "Not verified in this pass").
+verified-by: reading `packages/subagent/src` (index.ts, tool-schema.ts, spawn.ts, stream.ts, execute.ts, run-outcome.ts, usage.ts, agents.ts, agent-store.ts, local-config.ts, agent-panel.ts, dispatch.ts) against pi 1.2.0's shipped `examples/extensions/subagent/` (index.ts, agents.ts, README.md), and for the cost claim against pi's own accounting path (`createToolResultMessage` in `pi-agent-core/dist/agent-loop.js`, the `role === "toolResult"` branch of `AgentSession.getSessionStats()` in `dist/core/agent-session.js`), claim by claim, on 2026-10-14; the suite's tests (`npx vitest run` — 2430 tests / 145 files, including `run-outcome.test.ts`, `usage.test.ts`, `spawn.test.ts`, `dispatch.test.ts`, `local-config.test.ts`, `tool-validation.test.ts`, `agents-parse.test.ts`) and `tsc --noEmit` clean in all 13 workspace projects. Not verified in this pass: a live dispatch (see "Not verified in this pass").
 ---
 
 # Subagent (`@pi-archimedes/subagent`)
@@ -22,7 +22,7 @@ pi 1.0.4 changed what a non-empty `--tools` means: MCP tools stay *registered* u
 
 ## Run outcomes, not exit codes
 
-`decideRunOutcome()` (`packages/subagent/src/run-outcome.ts`) derives the terminal state from the child's own account of the run rather than from its exit status, in this order: `agent_settled.aborted` or a last `stopReason: "aborted"` (or a cancellation signal / exit 143 / 129) → `aborted`; last `stopReason: "error"` or any other non-zero exit → failure; last `stopReason: "length"` → `truncated`, whether the child exited 0 or 1; otherwise `completed`. The reported outcomes are `completed`, `truncated` and `aborted`; a failed run is reported as a tool error and carries no outcome. The table and the pi-version facts behind it (print mode's exit codes, `--mode json` not mapping `stopReason` at all) are in `docs/decisions/0028-subagent-closed-allowlist-and-run-outcomes.md`.
+`decideRunOutcome()` (`packages/subagent/src/run-outcome.ts`) derives the terminal state from the child's own account of the run rather than from its exit status, in this order: `agent_settled.aborted` → `aborted`; a last `stopReason: "aborted"` → `aborted`; a death by signal → `aborted` for a cancellation signal (`SIGTERM`/`SIGKILL`/`SIGHUP`/`SIGINT`) and failure for any other signal; exit 143 or 129 (pi caught SIGTERM / SIGHUP and exited by itself) → `aborted`; a last `stopReason: "error"` → failure; a last `stopReason: "length"` → `truncated`, whether the child exited 0 or 1; and only then any remaining non-zero exit → failure; otherwise `completed`. The order is not cosmetic at one point: pi 1.2.0 exits **1** on output-token truncation, so the `length` check has to come before the exit-code check or the case the whole table exists for would read as a crash. The reported outcomes are `completed`, `truncated` and `aborted`; a failed run is reported as a tool error and carries no outcome. The table and the pi-version facts behind it (print mode's exit codes, `--mode json` not mapping `stopReason` at all) are in `docs/decisions/0028-subagent-closed-allowlist-and-run-outcomes.md`.
 
 ## Cost is pi's own accounting
 
@@ -64,7 +64,7 @@ pi ships a subagent example — `index.ts`, `agents.ts`, four sample agents in `
 | Cost | summed by hand into `details`, shown by its renderer | a native `usage` on the tool result, so pi's own session totals include it |
 | Result reporting | exit code + `stopReason`, binary pass/fail | `completed` / `truncated` / `aborted` from `stopReason` and `agent_settled.aborted` |
 | System prompt to the child | temp file + `--append-system-prompt` | inline `--system-prompt`, no temp file |
-| MCP tools in a child | whatever `--tools` leaves registered | `--no-mcp` unless the config opts in with `mcp: true` |
+| MCP tools in a child | whatever `--tools` leaves registered | with a non-empty `tools` list, `--no-mcp` unless the config opts in with `mcp: true`; with no `tools` list neither flag is passed, so MCP keeps its normal behaviour and needs no opt-in |
 | Recursion guard | none in its spawn argv | `--exclude-tools subagent`, always |
 | Other surfaces | tool row only | `list_agents`, todo columns, ask relay, desktop-bridge dispatch |
 
