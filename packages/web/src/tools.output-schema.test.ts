@@ -146,6 +146,29 @@ describe("web_search", () => {
     expect(result.content[0]!.text).toBe("provider exploded");
     expect("structuredContent" in result).toBe(false);
   });
+
+  it("a hit with no publishedDate omits the optional, and still validates", async () => {
+    executeSearch.mockResolvedValueOnce({
+      provider: "p",
+      results: [{ title: "No date", url: "https://example.com/nd", snippet: "s" }],
+    });
+    const tool = tools.web_search!;
+    const result = await tool.execute("c1", { query: "pi" }, undefined, undefined, {});
+    expect((result.structuredContent as { results: Array<Record<string, unknown>> }).results[0]).toEqual({
+      title: "No date",
+      url: "https://example.com/nd",
+      snippet: "s",
+    });
+    expect(check(tool, result.structuredContent)).toBe(true);
+  });
+
+  it("zero hits → results: [], still valid", async () => {
+    executeSearch.mockResolvedValueOnce({ provider: "p", results: [] });
+    const tool = tools.web_search!;
+    const result = await tool.execute("c1", { query: "nothing matches this" }, undefined, undefined, {});
+    expect(result.structuredContent).toEqual({ responseId: "web_test_1", provider: "p", resultCount: 0, results: [] });
+    expect(check(tool, result.structuredContent)).toBe(true);
+  });
 });
 
 describe("fetch_content", () => {
@@ -160,6 +183,7 @@ describe("fetch_content", () => {
       wordCount: 42,
       status: 200,
       extractor: "readability",
+      content: "# A page\nbody text",
       snippet: "# A page\nbody text",
     });
     expect(check(tool, result.structuredContent)).toBe(true);
@@ -172,6 +196,33 @@ describe("fetch_content", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toBe("HTTP 404");
     expect("structuredContent" in result).toBe(false);
+  });
+
+  it("a document longer than the snippet keeps its FULL text in structuredContent", async () => {
+    // Declaring `outputSchema` moves a script from the text (the whole document)
+    // to the structured content (pi: `toScriptValue()`), so the structured
+    // payload has to carry what the text used to — a 500-character window is not
+    // the document. pi's own `bash` does the same: `structuredContent.output`
+    // holds the output, not a preview (`core/tools/bash.js`).
+    const long = "# Heading\n" + "word ".repeat(400);
+    extractContent.mockResolvedValueOnce({
+      url: "https://example.com/long",
+      title: "Long page",
+      markdown: long,
+      wordCount: 401,
+      status: 200,
+      extractor: "readability",
+    });
+    const tool = tools.fetch_content!;
+    const result = await tool.execute("c2", { url: "https://example.com/long" }, undefined, undefined, {});
+    const structured = result.structuredContent as Record<string, unknown>;
+    // The model still reads the whole document from `content`…
+    expect(result.content[0]!.text).toBe(long);
+    // …and so does a script, which never sees `content`.
+    expect(structured["content"]).toBe(long);
+    // The glanceable window stays, unchanged.
+    expect(structured["snippet"]).toBe(long.slice(0, 500));
+    expect(check(tool, result.structuredContent)).toBe(true);
   });
 });
 
@@ -229,5 +280,26 @@ describe("get_search_content", () => {
     // Byte-identical to the text pi built from `throw new Error("Response not found")`.
     expect(result.content[0]!.text).toBe("Response not found");
     expect("structuredContent" in result).toBe(false);
+  });
+
+  it("findText with no matches → matches: [] — the union's second branch, empty", async () => {
+    findPassages.mockReturnValueOnce([]);
+    const tool = tools.get_search_content!;
+    const result = await tool.execute(
+      "c3",
+      { responseId: "web_test_1", findText: "not in the cache" },
+      undefined,
+      undefined,
+      {},
+    );
+    expect(result.structuredContent).toEqual({ responseId: "web_test_1", matches: [] });
+    expect(check(tool, result.structuredContent)).toBe(true);
+  });
+
+  it("an offset past the end → empty content, first branch still valid", async () => {
+    const tool = tools.get_search_content!;
+    const result = await tool.execute("c3", { responseId: "web_test_1", offset: 999 }, undefined, undefined, {});
+    expect(result.structuredContent).toEqual({ responseId: "web_test_1", content: "" });
+    expect(check(tool, result.structuredContent)).toBe(true);
   });
 });

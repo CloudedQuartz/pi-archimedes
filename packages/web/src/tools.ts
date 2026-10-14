@@ -54,6 +54,14 @@ const FetchContentOutputSchema = Type.Object({
   wordCount: Type.Number(),
   status: Type.Number({ description: "HTTP status of the fetch" }),
   extractor: Type.String(),
+  /**
+   * The whole document, the same text the `content` block carries. A script
+   * cannot read that block — declaring `outputSchema` makes pi hand it this
+   * object instead (`toScriptValue()`) — so the document itself belongs here,
+   * as it does in pi's own `bash`, whose `structuredContent.output` is the
+   * output rather than a preview (`core/tools/bash.js`).
+   */
+  content: Type.String({ description: "The full extracted document, exactly as the content block reports it" }),
   /** First 500 characters of `content`, for a glanceable confirmation. */
   snippet: Type.String(),
 });
@@ -199,6 +207,7 @@ export function registerTools(pi: ExtensionAPI) {
           wordCount: doc.wordCount,
           status: doc.status,
           extractor: doc.extractor,
+          content: doc.markdown,
           snippet,
         },
       };
