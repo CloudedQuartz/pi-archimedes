@@ -1,8 +1,6 @@
-import { CURSOR_MARKER, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, renderFakeCursor, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const INLINE_NOTE_SEPARATOR = " — note: ";
-const INLINE_EDIT_CURSOR_INVERT_ON = "\x1b[7m";
-const INLINE_EDIT_CURSOR_INVERT_OFF = "\x1b[27m";
 
 export const INLINE_NOTE_WRAP_PADDING = 2;
 
@@ -29,7 +27,15 @@ function buildEditingInlineNote(
 	const afterCursorStartIndex = rawCharAtCursor.length > 0 ? cursorIndex + 1 : cursorIndex;
 	const afterCursor = sanitizeNoteForInlineDisplay(rawNote.slice(afterCursorStartIndex));
 	const cursorMarker = includeHardwareCursorMarker ? CURSOR_MARKER : "";
-	const cursorCell = `${cursorMarker}${INLINE_EDIT_CURSOR_INVERT_ON}${charAtCursor}${INLINE_EDIT_CURSOR_INVERT_OFF}`;
+	// `renderFakeCursor()`, not a hand-rolled `\x1b[7m`: it wraps the cell in
+	// pi-tui's zero-width APC fake-cursor markers, which `TUI.resolveFakeCursors()`
+	// turns into reverse video when it draws the frame — and drops when
+	// `showHardwareCursor` is on and the cell sits directly after `CURSOR_MARKER`,
+	// because the terminal is drawing a cursor there already. Raw escapes are
+	// invisible to that pass, so the frame used to carry the inverted block *and*
+	// the hardware cursor. Keep the marker immediately before the cell: that
+	// adjacency is what the drop matches (`note.test.ts`).
+	const cursorCell = `${cursorMarker}${renderFakeCursor(charAtCursor)}`;
 	return `${beforeCursor}${cursorCell}${afterCursor}`;
 }
 

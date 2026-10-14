@@ -41,6 +41,70 @@ const AskParamsSchema = Type.Object({
 
 type AskParams = Static<typeof AskParamsSchema>;
 
+/**
+ * The machine-readable answer set.
+ *
+ * Same referee as elsewhere in this task: pi hands this to a codemode script in
+ * place of the text and validates nothing, so `tool.output-schema.test.ts` runs
+ * the handler and checks the payload against the declaration.
+ *
+ * `results` is the same `QuestionResult[]` the renderer's `details.results`
+ * carries, and `cancelled` is the one fact the text states only in prose
+ * (`Selected: (cancelled)` / `User cancelled the question.`): the user answered
+ * nothing. `ask` has no failure result — a crashed picker still throws, because
+ * that is an unexpected error rather than a reported one.
+ */
+const AskAnswerItemSchema = Type.Object({
+	id: Type.String(),
+	question: Type.String(),
+	description: Type.Optional(Type.String()),
+	options: Type.Array(Type.String()),
+	multi: Type.Boolean(),
+	selectedOptions: Type.Array(Type.String()),
+	customInput: Type.Optional(Type.String()),
+});
+
+const AskOutputSchema = Type.Object({
+	cancelled: Type.Boolean({ description: "True when nothing was selected and nothing was typed for any question" }),
+	results: Type.Array(AskAnswerItemSchema),
+});
+
+/** The JSON-shaped copy of one answer (undefined fields are omitted, not null). */
+function toAnswerOutput(result: QuestionResult): {
+	id: string;
+	question: string;
+	description?: string;
+	options: string[];
+	multi: boolean;
+	selectedOptions: string[];
+	customInput?: string;
+} {
+	return {
+		id: result.id,
+		question: result.question,
+		...(result.description !== undefined && { description: result.description }),
+		options: [...result.options],
+		multi: result.multi,
+		selectedOptions: [...result.selectedOptions],
+		...(result.customInput !== undefined && { customInput: result.customInput }),
+	};
+}
+
+/**
+ * The `structuredContent` for a completed round. `cancelled` uses the tool's own
+ * cancel test — nothing selected and nothing typed, for every question — which is
+ * what makes the bridge and headless branches emit the cancel text.
+ */
+function buildAskStructuredContent(results: QuestionResult[]): {
+	cancelled: boolean;
+	results: ReturnType<typeof toAnswerOutput>[];
+} {
+	return {
+		cancelled: results.every((result) => result.selectedOptions.length === 0 && !result.customInput),
+		results: results.map(toAnswerOutput),
+	};
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface QuestionResult {
@@ -230,6 +294,20 @@ export function registerAskTool(pi: ExtensionAPI): void {
 		label: "Ask",
 		description: ASK_TOOL_DESCRIPTION,
 		parameters: AskParamsSchema,
+		outputSchema: AskOutputSchema,
+		/**
+		 * Declared to the model, never callable from a codemode script — the use pi
+		 * documents the exposure for ("orchestrating or interactive tools").
+		 * `pi: dist/core/agent-session.js`, `_getCallableTools()`: only `direct` +
+		 * active, `codemode` and `deferred` tools are callable, and codemode builds
+		 * its `tools` from that set.
+		 *
+		 * This costs a capability, measured before it was taken: with the old
+		 * default `direct` exposure a codemode script's `tools.ask({...})` resolved
+		 * (to `{"cancelled":true,...}` in a headless session, where there is no UI
+		 * to answer). Scripts lose that; the model's own calls are unaffected.
+		 */
+		exposure: "model-only",
 		renderCall: renderAskCall,
 		renderResult: renderAskResult,
 
@@ -265,11 +343,13 @@ export function registerAskTool(pi: ExtensionAPI): void {
 					return {
 						content: [{ type: "text", text: "User cancelled the question." }],
 						details: { results, customInput: undefined, description: undefined } satisfies AskToolDetails,
+						structuredContent: buildAskStructuredContent(results),
 					};
 				}
 				return {
 					content: [{ type: "text", text: buildAskSessionContent(results) }],
 					details: { results, customInput: undefined, description: undefined } satisfies AskToolDetails,
+					structuredContent: buildAskStructuredContent(results),
 				};
 			}
 
@@ -346,12 +426,14 @@ export function registerAskTool(pi: ExtensionAPI): void {
 					return {
 						content: [{ type: "text", text: "User cancelled the question." }],
 						details: { results, customInput: undefined, description: undefined } satisfies AskToolDetails,
+						structuredContent: buildAskStructuredContent(results),
 					};
 				}
 
 				return {
 					content: [{ type: "text", text: buildAskSessionContent(results) }],
 					details: { results, customInput: undefined, description: undefined } satisfies AskToolDetails,
+					structuredContent: buildAskStructuredContent(results),
 				};
 			}
 
@@ -421,6 +503,7 @@ async function executeTuiAsk(
 		return {
 			content: [{ type: "text", text: buildAskSessionContent([result]) }],
 			details,
+			structuredContent: buildAskStructuredContent([result]),
 		};
 	}
 
@@ -444,5 +527,6 @@ async function executeTuiAsk(
 	return {
 		content: [{ type: "text", text: buildAskSessionContent(results) }],
 		details: { results, customInput: undefined, description: undefined } satisfies AskToolDetails,
+		structuredContent: buildAskStructuredContent(results),
 	};
 }

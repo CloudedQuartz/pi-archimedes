@@ -385,6 +385,16 @@ export function createSudoExecTool(options: {
 		label: "sudo",
 		description: SUDO_EXEC_DESCRIPTION,
 		parameters: SudoExecParamsSchema,
+		/**
+		 * Author-declared hints with MCP's meaning, which pi passes to whatever a
+		 * permission extension does with them and documents as unverified
+		 * (`pi: dist/core/extensions/types.d.ts`, `ToolAnnotations`). This one is
+		 * worth declaring: the tool runs an arbitrary command as root, so it may
+		 * overwrite or delete rather than only add, and it is not read-only. The
+		 * confirmation this package does in its own handler is unchanged — a hint
+		 * is not a gate.
+		 */
+		annotations: { destructiveHint: true, readOnlyHint: false },
 
 		// NOTE: no return-type annotation on execute — pi reads `isError` at
 		// runtime though AgentToolResult omits it; the inferred union escapes
