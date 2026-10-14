@@ -1,7 +1,19 @@
 import type { StreamState } from "./types.js";
 
 // Truncation limits for previews
-const ARGS_PREVIEW_MAX = 120;
+//
+// The args preview is drawn on a transcript row, and the row is what decides how
+// much of it fits: `RowBlock` cuts at the width pi hands `render()` (see
+// `row-block.ts`). A cap here is therefore a second, invisible character limit —
+// the very defect #108 removed — because a preview shorter than the frame ends
+// mid-word with no cut marker. pi's own bash row keeps the command whole for the
+// same reason (`formatShellCall`). So this bound sits above anything a terminal
+// can draw, and exists only to keep the preview from growing the streamed
+// progress object without limit (it is carried for the life of the run).
+const ARGS_PREVIEW_MAX = 512;
+// `recentOutput` is carried in the progress object but drawn by no row, so it
+// keeps the old, tighter bound: widening it would only grow what is streamed.
+const OUTPUT_LINE_MAX = 120;
 const TOOL_CALLS_MAX = 50;
 const RECENT_OUTPUT_MAX = 50;
 
@@ -97,13 +109,13 @@ export function handleToolResult(state: StreamState, event: JsonEvent): void {
 
   if (typeof content === "string" && content.trim()) {
     const lines = content.split("\n").filter((l) => l.trim());
-    state.recentOutput.push(`[${toolName}] ${lines[0]?.slice(0, ARGS_PREVIEW_MAX)}`);
+    state.recentOutput.push(`[${toolName}] ${lines[0]?.slice(0, OUTPUT_LINE_MAX)}`);
   } else if (Array.isArray(content)) {
     for (const part of content) {
       if (part.type === "text" && (part.text as string)?.trim()) {
         const text = part.text as string;
         const lines = text.split("\n").filter((l) => l.trim());
-        state.recentOutput.push(`[${toolName}] ${lines[0]?.slice(0, ARGS_PREVIEW_MAX)}`);
+        state.recentOutput.push(`[${toolName}] ${lines[0]?.slice(0, OUTPUT_LINE_MAX)}`);
         break;
       }
     }

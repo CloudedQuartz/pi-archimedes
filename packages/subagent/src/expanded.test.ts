@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildExpandedText } from "./expanded.js";
+import type { RowSegment } from "./row-block.js";
 import type { SubagentResult } from "./types.js";
 
 // The expanded row is what the user reads after `ctrl+o`; the compact row is
@@ -7,6 +8,9 @@ import type { SubagentResult } from "./types.js";
 // (CONTEXT.md) rather than collapsing it into done/failed.
 
 const theme = { fg: (token: string, text: string) => `[${token}]${text}`, bold: (t: string) => t };
+
+/** The content these segments carry, ignoring how each is laid out at render time. */
+const drawnText = (segments: RowSegment[]): string => segments.map((s) => s.text).join("\n");
 
 function makeResult(overrides: Partial<SubagentResult> = {}): SubagentResult {
   return {
@@ -25,33 +29,33 @@ function makeResult(overrides: Partial<SubagentResult> = {}): SubagentResult {
 
 describe("expanded view: run outcomes", () => {
   it("still says Done for a completed run", () => {
-    expect(buildExpandedText(makeResult({ outcome: "completed" }), undefined, theme)).toContain("✓ Done");
+    expect(drawnText(buildExpandedText(makeResult({ outcome: "completed" }), undefined, theme))).toContain("✓ Done");
   });
 
   it("says Truncated — and not Failed — for a cut-off answer", () => {
-    const text = buildExpandedText(
+    const out = drawnText(buildExpandedText(
       makeResult({ outcome: "truncated", exitCode: 1, finalOutput: "partial" }),
       undefined,
       theme,
-    );
-    expect(text).toMatch(/truncated/i);
-    expect(text).not.toMatch(/Failed/);
+    ));
+    expect(out).toMatch(/truncated/i);
+    expect(out).not.toMatch(/Failed/);
   });
 
   it("says Aborted for a cancelled run", () => {
-    const text = buildExpandedText(
+    const out = drawnText(buildExpandedText(
       makeResult({ outcome: "aborted", exitCode: 143, error: undefined }),
       undefined,
       theme,
-    );
-    expect(text).toMatch(/aborted/i);
-    expect(text).not.toMatch(/Failed/);
+    ));
+    expect(out).toMatch(/aborted/i);
+    expect(out).not.toMatch(/Failed/);
   });
 
   it("keeps reporting a real error as an error", () => {
     const failed = makeResult({ exitCode: 1, error: "401 unauthorized" });
     delete failed.outcome; // a failed run claims no outcome
-    const text = buildExpandedText(failed, undefined, theme);
-    expect(text).toContain("401 unauthorized");
+    const out = drawnText(buildExpandedText(failed, undefined, theme));
+    expect(out).toContain("401 unauthorized");
   });
 });

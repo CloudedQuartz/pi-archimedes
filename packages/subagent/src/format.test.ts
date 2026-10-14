@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { truncLine, formatParallelResults } from "./format.js";
+import { formatParallelResults } from "./format.js";
 import type { SubagentResult } from "./types.js";
 
 function makeResult(overrides: Partial<SubagentResult> = {}): SubagentResult {
@@ -17,33 +17,14 @@ function makeResult(overrides: Partial<SubagentResult> = {}): SubagentResult {
   };
 }
 
-// ── truncLine ───────────────────────────────────────────────────────────────
+// ── Row truncation: moved ─────────────────────────────────────────────────
 
-describe("truncLine", () => {
-  it("returns text unchanged when within limit", () => {
-    expect(truncLine("hello", 10)).toBe("hello");
-  });
-
-  it("truncates with '...' when exceeding limit", () => {
-    expect(truncLine("hello world", 8)).toBe("hello...");
-  });
-
-  it("stops at newline boundary instead of bleeding into next line", () => {
-    expect(truncLine("line one\nline two\nline three", 15)).toBe("line one...");
-  });
-
-  it("truncates first line if it itself exceeds limit", () => {
-    expect(truncLine("this is a very long first line\nsecond", 12)).toBe("this is a...");
-  });
-
-  it("handles multiple consecutive newlines", () => {
-    expect(truncLine("a\n\n\nb", 10)).toBe("a...");
-  });
-
-  it("handles text starting with newline", () => {
-    expect(truncLine("\nhello", 10)).toBe("...");
-  });
-});
+// The character cap this section used to pin (`truncLine`, at 60/80 characters)
+// is gone. Rows are now cut at the width pi renders them at, which keeps the two
+// properties the cap existed for — the ellipsis stays inside the styled span, and
+// a newline is a hard boundary — while letting a row fill the frame. Those
+// properties are pinned with measured bytes in `row-block.test.ts`, and the width
+// contract itself in `tool-row.width-audit.test.ts`.
 
 describe("formatParallelResults", () => {
   it("renders header + body per task with exactly one blank line between sections", () => {

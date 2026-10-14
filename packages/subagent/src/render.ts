@@ -1,4 +1,4 @@
-import { Text } from "@earendil-works/pi-tui";
+import { RowBlock, row, type RowSegment } from "./row-block.js";
 import type { SubagentDetails, SubagentProgress, SubagentToolResult } from "./types.js";
 import {
   renderCompactSingle,
@@ -17,107 +17,117 @@ type Theme = { fg: (token: string, text: string) => string; bold: (text: string)
 type RenderContext = {
   expanded: boolean;
   isError: boolean;
-  lastComponent: Text | undefined;
+  lastComponent: RowBlock | undefined;
   state: Record<string, unknown>;
   invalidate: () => void;
 };
 
+/**
+ * Draw a subagent result (or its live progress) into `rows`.
+ *
+ * `rows` is a `RowBlock` rather than a plain `Text` because the renderers below
+ * hand back whole content: the component is what knows the width pi is drawing
+ * at, and it is what cuts each row to that width (`row-block.ts`).
+ */
 export function renderSubagentResult(
-  text: Text,
+  rows: RowBlock,
   result: SubagentToolResult,
   options: { expanded: boolean },
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowBlock {
   const details: SubagentDetails | undefined = result.details;
   const expanded = context.expanded ?? options.expanded;
 
   if (!details) {
-    text.setText(theme.fg("dim", "  no results"));
-    return text;
+    rows.setText(theme.fg("dim", "  no results"));
+    return rows;
   }
 
   // ── Streaming progress (results empty but progress has data) ──────────
   if (details.results.length === 0 && details.progress && details.progress.length > 0) {
     if (details.progress.length === 1) {
-      return renderProgressUpdate(text, details.progress[0]!, expanded, theme, context);
+      return renderProgressUpdate(rows, details.progress[0]!, expanded, theme, context);
     }
-    return renderProgressUpdatesParallel(text, details, expanded, theme, context);
+    return renderProgressUpdatesParallel(rows, details, expanded, theme, context);
   }
 
   if (details.results.length === 0) {
-    text.setText(theme.fg("dim", "  no results"));
-    return text;
+    rows.setText(theme.fg("dim", "  no results"));
+    return rows;
   }
 
   // ── Single agent ────────────────────────────────────────────────────────
   if (details.mode === "single" || details.results.length === 1) {
-    return renderSingleAgent(text, details.results[0]!, details.progress?.[0], expanded, theme, context);
+    return renderSingleAgent(rows, details.results[0]!, details.progress?.[0], expanded, theme, context);
   }
 
   // ── Parallel agents ─────────────────────────────────────────────────────
-  return renderParallelAgents(text, details, expanded, theme, context);
+  return renderParallelAgents(rows, details, expanded, theme, context);
 }
 
 function renderSingleAgent(
-  text: Text,
+  rows: RowBlock,
   result: SubagentDetails["results"][number],
   progress: SubagentDetails["progress"] extends (infer U)[] | undefined ? U | undefined : undefined,
   expanded: boolean,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowBlock {
   if (expanded) {
-    return renderExpanded(text, result, progress, theme);
+    return renderExpanded(rows, result, progress, theme);
   }
-  return renderCompactSingle(text, result, progress, theme, context);
+  renderCompactSingle(rows, result, progress, theme, context);
+  return rows;
 }
 
 function renderParallelAgents(
-  text: Text,
+  rows: RowBlock,
   details: SubagentDetails,
   expanded: boolean,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowBlock {
   if (expanded) {
     const progressArr: SubagentProgress[] = details.progress ?? [];
-    const lines = details.results.map((result, i) => {
-      return buildExpandedText(result, progressArr[i], theme);
-    });
-    text.setText(lines.join("\n\n"));
-    return text;
+    rows.setSegments(joinBlocks(details.results.map((result, i) => buildExpandedText(result, progressArr[i], theme))));
+    return rows;
   }
-  return renderCompactParallel(text, details, theme, context);
+  renderCompactParallel(rows, details, theme, context);
+  return rows;
 }
 
 function renderProgressUpdate(
-  text: Text,
+  rows: RowBlock,
   progress: SubagentProgress,
   expanded: boolean,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowBlock {
   if (expanded) {
-    return renderProgressExpanded(text, progress, theme);
+    return renderProgressExpanded(rows, progress, theme);
   }
-  return renderCompactProgress(text, progress, theme, context);
+  renderCompactProgress(rows, progress, theme, context);
+  return rows;
 }
 
 function renderProgressUpdatesParallel(
-  text: Text,
+  rows: RowBlock,
   details: SubagentDetails,
   expanded: boolean,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowBlock {
   if (expanded) {
     const progressArr: SubagentProgress[] = details.progress ?? [];
-    const lines = progressArr.map((progress) => {
-      return buildProgressExpandedText(progress, theme);
-    });
-    text.setText(lines.join("\n\n"));
-    return text;
+    rows.setSegments(joinBlocks(progressArr.map((progress) => buildProgressExpandedText(progress, theme))));
+    return rows;
   }
-  return renderCompactParallelProgress(text, details, theme, context);
+  renderCompactParallelProgress(rows, details, theme, context);
+  return rows;
+}
+
+/** One blank row between agents — the spacing the old `join("\n\n")` produced. */
+function joinBlocks(blocks: RowSegment[][]): RowSegment[] {
+  return blocks.flatMap((blockLines, i) => (i === 0 ? blockLines : [row(""), ...blockLines]));
 }

@@ -1,13 +1,20 @@
-import { Text } from "@earendil-works/pi-tui";
 import type { RunOutcome, SubagentDetails, SubagentProgress, SubagentResult, SubagentToolCall, SubagentToolResult } from "./types.js";
-import { formatDuration, truncLine, buildStatsLine, buildAgentLabel, buildOutcomeLine } from "./format.js";
+import { formatDuration, buildStatsLine, buildAgentLabel, buildOutcomeLine } from "./format.js";
+import { row, type RowSegment, type RowSink } from "./row-block.js";
 import { renderToolCallLine } from "@pi-archimedes/core/tool-render";
 
 type Theme = { fg: (token: string, text: string) => string; bold: (text: string) => string };
 type RenderContext = { state: Record<string, unknown>; invalidate: () => void };
 
+// Re-exported so callers and tests describe the sink the same way the builders do.
+export type { RowSink };
+
 // ── Activity line builder ───────────────────────────────────────────────────
 
+// The builders below hand back whole content, never a fixed-length preview: the
+// row each line lands on is cut at the width pi renders at (`RowBlock`,
+// `row-block.ts`), so a long task or error fills the frame instead of stopping at
+// 60 or 80 characters.
 interface ActivityData {
   currentTool: string | undefined;
   currentToolArgs: string | undefined;
@@ -25,7 +32,7 @@ export function buildActivityLine(
   theme: Theme,
 ): string {
   if (data.error) {
-    return theme.fg("error", "✗ " + truncLine(data.error, 80));
+    return theme.fg("error", "✗ " + data.error);
   }
 
   // A finished run reports its outcome: Done / Truncated / Aborted. Truncated and
@@ -48,9 +55,7 @@ export function buildActivityLine(
 
   // Running: show the current tool with the running glyph ▸ + live duration.
   if (data.currentTool) {
-    const argsPreview = data.currentToolArgs
-      ? truncLine(data.currentToolArgs, 60)
-      : "";
+    const argsPreview = data.currentToolArgs ?? "";
     const durationPart = data.currentToolStartedAt
       ? " | " + formatDuration(Date.now() - data.currentToolStartedAt)
       : "";
@@ -64,12 +69,10 @@ export function buildActivityLine(
     const lastCall = data.toolCalls[data.toolCalls.length - 1];
     if (lastCall) {
       if (typeof lastCall === "string") {
-        return renderToolCallLine("success", truncLine(lastCall, 60), "", theme);
+        return renderToolCallLine("success", lastCall, "", theme);
       }
       const status = lastCall.error ? "error" : "success";
-      const suffix = lastCall.argsPreview
-        ? ": " + truncLine(lastCall.argsPreview, 60)
-        : "";
+      const suffix = lastCall.argsPreview ? ": " + lastCall.argsPreview : "";
       return renderToolCallLine(status, lastCall.name, suffix, theme);
     }
   }
@@ -77,7 +80,7 @@ export function buildActivityLine(
   // Running, no tool history: show first line of streamed output (▸, muted).
   if (data.finalOutput) {
     const firstLine = data.finalOutput.split("\n")[0] ?? "";
-    return renderToolCallLine("running", truncLine(firstLine, 80), "", theme);
+    return renderToolCallLine("running", firstLine, "", theme);
   }
 
   // Running, no info yet
@@ -106,28 +109,33 @@ type AgentBlockData = {
 //   <agent>: <task>
 //   <model> · <stats>
 //   <activity>          (status lives here — "✓ Done" / "✗ Failed" / ▸ tool)
-function buildAgentBlock(data: AgentBlockData, theme: Theme): string {
+// Each field is handed over as its own `row` segment, so it stays one row of the
+// rendered frame however wide the frame is. Handing the three over as one string
+// would not do that: a task is free text and an error is usually stderr, so both
+// carry newlines, and `setText` reads every newline as the start of a new row —
+// which would push a failed child's stack trace open across the collapsed block.
+// `truncateRow` cuts the row at the first newline and marks it with the ellipsis,
+// which is the boundary the old character-based `truncLine` enforced.
+function buildAgentBlock(data: AgentBlockData, theme: Theme): RowSegment[] {
   const statsLine = buildStatsLine(data.statsData, theme);
   const modelLabel = data.model ? theme.fg("accent", data.model) : "";
   const activityLine = buildActivityLine(data.activity, theme);
   const label = buildAgentLabel(data.agentName, data.task, theme);
 
-  return (
-    label +
-    "\n" +
-    [modelLabel, statsLine].filter(Boolean).join(" ") +
-    "\n" +
-    activityLine
-  );
+  return [
+    row(label),
+    row([modelLabel, statsLine].filter(Boolean).join(" ")),
+    row(activityLine),
+  ];
 }
 
 export function renderCompactSingle(
-  text: Text,
+  text: RowSink,
   result: SubagentResult,
   progress: SubagentProgress | undefined,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowSink {
   // agentName sourced from result; defaults to "subagent"
   const agentName = result.agent ?? "subagent";
   const summary = result.progressSummary ?? { toolCount: 0, tokens: 0, durationMs: 0 };
@@ -144,7 +152,7 @@ export function renderCompactSingle(
     ? Date.now() - (context.state[timeKey] as number)
     : summary.durationMs;
 
-  const output = buildAgentBlock(
+  const block = buildAgentBlock(
     {
       agentName,
       task: result.task,
@@ -170,19 +178,19 @@ export function renderCompactSingle(
     theme,
   );
 
-  text.setText(output);
+  text.setSegments(block);
   return text;
 }
 
 // ── Compact parallel agents ─────────────────────────────────────────────────
 
 export function renderCompactParallel(
-  text: Text,
+  text: RowSink,
   details: SubagentDetails,
   theme: Theme,
   context: RenderContext,
-): Text {
-  const lines = details.results.map((result, i) => {
+): RowSink {
+  const blocks = details.results.map((result, i) => {
     const progress = details.progress?.[i];
     const agentName = result.agent ?? "subagent";
     const summary = result.progressSummary ?? { toolCount: 0, tokens: 0, durationMs: 0 };
@@ -222,18 +230,18 @@ export function renderCompactParallel(
     );
   });
 
-  text.setText(lines.join("\n"));
+  text.setSegments(blocks.flat());
   return text;
 }
 
 // ── Compact streaming progress ──────────────────────────────────────────────
 
 export function renderCompactProgress(
-  text: Text,
+  text: RowSink,
   progress: SubagentProgress,
   theme: Theme,
   context: RenderContext,
-): Text {
+): RowSink {
   // agentName sourced from progress; defaults to "subagent"
   const agentName = progress.agent ?? "subagent";
   const status = progress.status;
@@ -248,7 +256,7 @@ export function renderCompactProgress(
     ? Date.now() - (context.state[timeKey] as number)
     : progress.durationMs;
 
-  const output = buildAgentBlock(
+  const block = buildAgentBlock(
     {
       agentName,
       task: progress.task,
@@ -274,19 +282,19 @@ export function renderCompactProgress(
     theme,
   );
 
-  text.setText(output);
+  text.setSegments(block);
   return text;
 }
 
 // ── Compact parallel streaming progress ─────────────────────────────────────
 
 export function renderCompactParallelProgress(
-  text: Text,
+  text: RowSink,
   details: SubagentDetails,
   theme: Theme,
   context: RenderContext,
-): Text {
-  const lines = (details.progress ?? []).map((progress) => {
+): RowSink {
+  const blocks = (details.progress ?? []).map((progress) => {
     const agentName = progress.agent ?? "subagent";
     const status = progress.status;
 
@@ -316,6 +324,6 @@ export function renderCompactParallelProgress(
     );
   });
 
-  text.setText(lines.join("\n"));
+  text.setSegments(blocks.flat());
   return text;
 }
