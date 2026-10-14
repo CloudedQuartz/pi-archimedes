@@ -44,7 +44,7 @@ Two operations, `write` and `read`:
   "todoList": [
     { "content": "Parse config files", "description": "Read and validate settings", "status": "completed" },
     { "content": "Build state manager", "description": "Implement reactive store", "status": "in_progress" },
-    { "content": "Connect UI widget", "description": "Bind to core bus events", "status": "pending" }
+    { "content": "Connect UI widget", "description": "Bind to the shared event channels", "status": "pending" }
   ]
 }
 ```
@@ -68,6 +68,6 @@ When every task reaches `completed`, the widget shows a brief confirmation, then
 
 ## Part of the suite
 
-With subagents running alongside in the [full suite](https://github.com/danielcherubini/pi-archimedes), each child gets its own named column to the right of yours — it appears on the child's first non-empty todo update over core's bus (empty updates are ignored; it does not appear when the worker merely starts), and it is removed when the child exits. The 2-second auto-clear is local to whatever list completed — a child clearing its own list does not dismiss the column in your session. On/off is managed by the suite: toggle via `/plugins` (`archimedes.todo.enabled`, default on).
+With subagents running alongside in the [full suite](https://github.com/danielcherubini/pi-archimedes), each child gets its own named column to the right of yours — it appears on the child's first non-empty todo update over the host's event bus, `pi.events` (empty updates are ignored; it does not appear when the worker merely starts), and it is removed when the child exits. The 2-second auto-clear is local to whatever list completed — a child clearing its own list does not dismiss the column in your session. On/off is managed by the suite: toggle via `/plugins` (`archimedes.todo.enabled`, default on).
 
 ← [Back to pi-archimedes](https://github.com/danielcherubini/pi-archimedes)

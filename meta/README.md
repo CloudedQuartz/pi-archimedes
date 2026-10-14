@@ -169,7 +169,7 @@ Every component keeps its own namespace under `~/.pi/agent/settings.json`, which
 
 | Component | npm package | What it adds |
 |-----------|-------------|--------------|
-| **Core** | [`@pi-archimedes/core`](https://www.npmjs.com/package/@pi-archimedes/core) | Shared event bus, splash screen, framed editor, working spinner, thinking blocks |
+| **Core** | [`@pi-archimedes/core`](https://www.npmjs.com/package/@pi-archimedes/core) | Shared event-channel vocabulary (`pi.events`), splash screen, framed editor, working spinner, thinking blocks |
 | **Subagent** | [`@pi-archimedes/subagent`](https://www.npmjs.com/package/@pi-archimedes/subagent) | Live subagent dispatch, custom agent definitions; `/agents` editor with the suite |
 | **Todo** | [`@pi-archimedes/todo`](https://www.npmjs.com/package/@pi-archimedes/todo) | Multi-column todo board with subagent columns and auto-clear |
 | **Ask** | [`@pi-archimedes/ask`](https://www.npmjs.com/package/@pi-archimedes/ask) | Structured questions — including subagent questions relayed into your terminal |
