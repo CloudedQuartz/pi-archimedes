@@ -408,12 +408,200 @@ export async function readClipboardImage(options?: {
   throw new Error(getUnavailableReaderMessage(platform));
 }
 
+// ── Copied files on the clipboard ───────────────────────────────────────────
+
+/**
+ * Read copied file paths (a file manager's "Copy" on macOS/Windows) off the
+ * clipboard — the same call pi makes, `getNativeClipboard()?.getFilePaths?.()`
+ * (`dist/utils/clipboard.js:83-86`), on the same public accessor used for
+ * images above.
+ *
+ * The optional call is load-bearing, not defensive noise: this package's peer
+ * floor is pi/pi-tui `>=0.86.0`, `getFilePaths` arrived later than that, and it
+ * is still optional in 1.2.0 (`pi-tui/dist/native-platform.d.ts:8`). Measured on
+ * this Linux box with pi-tui 1.2.0 installed: the X11 helper has no
+ * `getFilePaths` at all (`typeof helper.getFilePaths === "undefined"`), so this
+ * returns `null` there and the caller falls through to text — which is exactly
+ * what pi's own path branch does on Linux.
+ *
+ * A rejected transfer is *not* swallowed: pi lets it reach
+ * `handleClipboardPaste`'s catch and show a failure, and the caller here does
+ * the same, so a clipboard that failed to answer is distinguishable from one
+ * that answered "no files".
+ */
+export async function readClipboardFilePaths(): Promise<string[] | null> {
+  const paths = await getNativeClipboard()?.getFilePaths?.();
+  return paths?.length ? paths : null;
+}
+
+// ── Clipboard text ──────────────────────────────────────────────────────────
+
+interface TextReaderCommand {
+  command: string;
+  args: string[];
+}
+
+/**
+ * The command candidates for a plain-text read, in pi's order
+ * (`readClipboardText`, `dist/utils/clipboard.js:58-81`). pi's own function is
+ * not reachable from here — the package exports are `"."` and `"./rpc-entry"`
+ * and the root re-exports only `copyToClipboard` (`dist/index.d.ts:38`) — so
+ * this is a faithful re-implementation over the command runner this module
+ * already has, including the ordering reason: the native helper is the LAST
+ * resort, because on Wayland/X11 the CLI tools answer instantly while the X11
+ * helper can stall or fail on display auth. (Observed on this machine: the
+ * helper loads, then every read fails with `Invalid MIT-MAGIC-COOKIE-1 key`,
+ * while `wl-paste` returns text immediately.)
+ *
+ * No macOS/Windows candidates, deliberately: pi has none either — those
+ * platforms go straight to the native helper, so adding `pbpaste` here would be
+ * inventing a mechanism pi does not use.
+ */
+function textReaderCommands(
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+): TextReaderCommand[] {
+  const commands: TextReaderCommand[] = [];
+  // Termux reports platform "android", not "linux" (pi's note, clipboard.js:61).
+  if (environment.TERMUX_VERSION) {
+    commands.push({ command: "termux-clipboard-get", args: [] });
+  }
+  if (platform === "linux") {
+    if (environment.WAYLAND_DISPLAY) {
+      commands.push({ command: "wl-paste", args: ["--no-newline", "--type", "text"] });
+    }
+    if (environment.DISPLAY) {
+      commands.push({ command: "xclip", args: ["-selection", "clipboard", "-out"] });
+      commands.push({ command: "xsel", args: ["--clipboard", "--output"] });
+    }
+  }
+  return commands;
+}
+
+/**
+ * Read plain text from the clipboard, or `null` when there is none.
+ *
+ * pi's semantics, candidate for candidate: a candidate that cannot run (missing
+ * binary, non-zero exit, timeout) is skipped, but the first one that exits
+ * cleanly *answers* — even with empty output, which means "the clipboard holds
+ * no text" and must not be retried somewhere else (pi:
+ * `if (bytes !== undefined) return bytes.toString("utf8") || null`). The native
+ * helper is the final fallback and its failures read as "no text".
+ */
+export async function readClipboardText(options?: {
+  environment?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+}): Promise<string | null> {
+  const environment = options?.environment ?? process.env;
+  const platform = options?.platform ?? process.platform;
+
+  for (const candidate of textReaderCommands(platform, environment)) {
+    const result = runCommand(candidate.command, candidate.args, READ_TIMEOUT_MS);
+    if (!result.ok) {
+      continue;
+    }
+    return result.stdout.toString("utf8") || null;
+  }
+
+  try {
+    return (await getNativeClipboard()?.getText?.()) || null;
+  } catch {
+    return null;
+  }
+}
+
+// ── pi's path-insertion spacing rule ────────────────────────────────────────
+
+/** Where the editor cursor sits, in the same shape pi's `getCursor()` returns. */
+export interface EditorCursor {
+  line: number;
+  col: number;
+}
+
+/**
+ * pi's shell-quoting helper, verbatim from
+ * `dist/modes/interactive/interactive-mode.js:166-171`:
+ *
+ * ```js
+ * function quoteIfNeeded(value) {
+ *     if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
+ *         return value;
+ *     }
+ *     return `'${value.replace(/'/g, `'\\''`)}'`;
+ * }
+ * ```
+ *
+ * Re-implemented rather than imported because pi keeps it module-private in the
+ * interactive-mode bundle (used at `:182` and `:2504`, exported nowhere), and
+ * a shell-quoting divergence between the two implementations is worse than this
+ * 5-line copy with the source quoted above.
+ */
+function quoteIfNeeded(value: string): string {
+  if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The text to insert for a batch of clipboard file paths, built from pi's
+ * `handleClipboardPaste` (`dist/modes/interactive/interactive-mode.js:2504-2511`),
+ * quoted here so a future reader can diff it against pi rather than re-derive it:
+ *
+ * ```js
+ * const paths = this.isBashMode ? filePaths.map(quoteIfNeeded).join(" ") : filePaths.join("\n");
+ * const cursor = this.editor.getCursor?.();
+ * const currentLine = cursor ? (this.editor.getText().split("\n")[cursor.line] ?? "") : "";
+ * const characterBeforeCursor = cursor && cursor.col > 0 ? currentLine[cursor.col - 1] : "";
+ * const characterAfterCursor = cursor ? currentLine[cursor.col] : "";
+ * const leadingSpace = characterBeforeCursor && !/\s/.test(characterBeforeCursor) ? " " : "";
+ * const trailingSpace = characterAfterCursor && !/\s/.test(characterAfterCursor) ? " " : "";
+ * this.editor.insertTextAtCursor?.(`${leadingSpace}${paths}${trailingSpace}`);
+ * ```
+ *
+ * `cursor` defaults to the end of the draft. That default is the honest limit
+ * of this package, not a convenience: `ExtensionUIContext` exposes
+ * `pasteToEditor`, `setEditorText` and `getEditorText`
+ * (`dist/core/extensions/types.d.ts:132-137`) and no cursor accessor, and there
+ * is no route to the live editor instance from an extension — so an extension
+ * can read the draft but not where the caret is inside it. Everything the rule
+ * can be asked for is exact (see the per-case tests); where the caret is not at
+ * the end of the draft, pi's trailing space is the one thing we cannot know,
+ * and the run-on it would prevent is pinned as a known limitation in
+ * `paste-dispatch.test.ts` rather than hidden.
+ *
+ * pi's `isBashMode` is the draft's `!` prefix (`:2470`), so it is derived from
+ * the same draft text here.
+ */
+export function buildPathInsertion(
+  paths: readonly string[],
+  editorText: string,
+  cursor?: EditorCursor,
+): string {
+  const lines = editorText.split("\n");
+  const lastLine = lines[lines.length - 1] ?? "";
+  const at: EditorCursor = cursor ?? { line: lines.length - 1, col: lastLine.length };
+  const isBashMode = editorText.trimStart().startsWith("!");
+  const joined = isBashMode ? paths.map(quoteIfNeeded).join(" ") : paths.join("\n");
+
+  const currentLine = lines[at.line] ?? "";
+  const characterBeforeCursor = at.col > 0 ? currentLine[at.col - 1] : "";
+  const characterAfterCursor = currentLine[at.col];
+  const leadingSpace = characterBeforeCursor && !/\s/.test(characterBeforeCursor) ? " " : "";
+  const trailingSpace = characterAfterCursor && !/\s/.test(characterAfterCursor) ? " " : "";
+  return `${leadingSpace}${joined}${trailingSpace}`;
+}
+
 // ── File-based image reading ────────────────────────────────────────────────
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
 
 export function isImageFilePath(path: string): boolean {
-  return IMAGE_EXTENSIONS.has(path.toLowerCase().split(".").pop() ?? "");
+  const extension = path.toLowerCase().split(".").pop();
+  // The set is dotted (".png"); `split(".").pop()` returns the extension bare
+  // ("png"), so the dot has to be put back — comparing them as they were left
+  // every path (including a .png) reading as "not an image".
+  return extension !== undefined && IMAGE_EXTENSIONS.has(`.${extension}`);
 }
 
 export async function readFileAsImage(filePath: string): Promise<ClipboardImage | null> {

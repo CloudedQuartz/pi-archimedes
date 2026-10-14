@@ -25,6 +25,7 @@ New to Pi? Pi itself is a one-time global install and needs Node.js ≥ 22.19.0.
 - **Markers on paste** — pasting inserts a visible `[Image #1]` placeholder at the cursor; each paste gets the next number.
 - **Attachment on submit** — when you send the message, your text is scanned for markers and the matching queued images are attached to it. Delete a marker and its image is not attached — the text is the source of truth.
 - **Inline preview** — a preview of the attached images is sent and rendered in the TUI. Previews appear where your terminal renders inline images; on a terminal that can't show them, the image is still attached — only the preview falls back.
+- **Same key, wider scope** — the paste key is Pi's own (`app.clipboard.pasteImage`), and taking it means covering everything it did, so with no image on the clipboard the handler falls back to what Pi does: copied **file paths** are inserted at the cursor with Pi's own spacing, and otherwise the clipboard **text** is inserted. One keypress produces one outcome, in that order: image, then paths, then text. Nothing on the clipboard leaves the draft untouched and says nothing, exactly as Pi does.
 - **Size guard** — 20 MiB **per image**, rejected with a clear message before it wastes context or hangs the submit.
 - **Model side** — the session's model must support images for the attachment to be usable.
 
