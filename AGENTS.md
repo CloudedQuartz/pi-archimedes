@@ -4,7 +4,7 @@ Rules for AI agents working on this monorepo.
 
 ## Monorepo Structure
 
-- `packages/core` — bus, bridge, chrome, text/color utils, overlay, profiler, settings-io, tool-render
+- `packages/core` — event-channel vocabulary, bridge, chrome, text/color utils, overlay, profiler, settings-io, tool-render
 - `packages/ui` — TUI enhancements: bash tool styling, custom editor, border spinner, thinking collapse, splash animation (depends on core)
 - `packages/ask` — structured question tool with tabbed flow and inline notes (depends on core)
 - `packages/footer` — status bar (depends on core)
@@ -57,7 +57,7 @@ When a new package is added under `packages/<name>/`, update **all** of these or
 
 ### Imports
 - **Within a package:** always relative paths (e.g., `from "../chrome.js"`)
-- **Cross-package:** use package subpath exports (e.g., `from "@pi-archimedes/core/bus"`)
+- **Cross-package:** use package subpath exports (e.g., `from "@pi-archimedes/core/events"`)
 - **Never** import `../utils/...` — those barrels were dissolved into `text.ts` and `color.ts`
 
 ### Config

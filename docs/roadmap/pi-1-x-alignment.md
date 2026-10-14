@@ -509,17 +509,20 @@ Peer floors `>=1.2.0` for `ui` and `diff`, plus `reportPiSupport("ui", "1.2.0")`
 6. Retire the **Bus** entry from `CONTEXT.md` in the final commit of this task (the glossary describes shipped reality, so this is the ship-time edit).
 
 **Steps:**
+
+> **Progress (2026-10-14):** item 1 (transport) and item 6 (glossary) have landed. `pi.events` was proved shared process-wide across extensions on real pi 1.2.0 — two throwaway extensions, two `ExtensionAPI` handles, 2/2 deliveries — and the pre-subscriber queue turned out to be dead code: nothing in the suite listens for something emitted during startup, and `session_start` always runs before the first `agent_start`/`turn_end`, so the subscription is always open in time. What did have to be written is the lifetime half: `pi.events` throws on a stale handle, so emits go through `core`'s `emitOn()`, and every subscription is unsubscribed at `session_shutdown` and re-taken idempotently at `session_start`. `pi.events` predates `core`'s `>=0.85.0` floor (verified in that version's own declarations), and the two packages that gained a runtime dependency on it (`ask`, `todo`) were raised from `>=0.1.0` to `>=0.85.0`. ADR 0029 carries the implementation note.
+
 - [ ] Failing tests: a `todo` update reaches a subscriber registered *before* the emitter (the queue behaviour `Bus` provided — `pi.events` has no queue, so prove whether it is still needed by the real call order and keep a minimal ordering guard if it is); `ask`/`web`/`subagent` results carry `structuredContent` matching their `outputSchema`; `sudo_exec` reports `destructiveHint`.
 - [ ] Run `npx vitest run packages/todo packages/ask packages/web packages/subagent` — expect failures.
-- [ ] Migrate transport; then grep with the relative forms included — `grep -rn "core/bus\|bus\.js" packages/*/src meta/src --include=*.ts | grep -v "\.test\.ts"` — and nothing may remain. A bare `core/bus` grep is insufficient: `core/src/bridge/events.ts:26` imports `"../bus.js"` relatively, so a grep that misses it goes green while the delete breaks the build.
-- [ ] Delete `bus.ts`/`bus.test.ts`; `pnpm -r exec -- tsc --noEmit`; `pnpm test`.
+- [x] Migrate transport; then grep with the relative forms included — `grep -rn "core/bus\|bus\.js" packages/*/src meta/src --include=*.ts | grep -v "\.test\.ts"` — and nothing may remain. A bare `core/bus` grep is insufficient: `core/src/bridge/events.ts:26` imports `"../bus.js"` relatively, so a grep that misses it goes green while the delete breaks the build.
+- [x] Delete `bus.ts`/`bus.test.ts`; `pnpm -r exec -- tsc --noEmit`; `pnpm test`.
 - [ ] Add schemas/annotations/exposure; `pnpm -r exec -- tsc --noEmit`; `pnpm test`; confirm from a codemode script that structured content arrives.
 - [ ] SettingsList rebuild, `meta` first then `subagent`: `cd meta && npx tsc --noEmit`; `cd packages/subagent && npx tsc --noEmit`; `pnpm test`; manual pass through `/archimedes` (every item, including the editable model row) and `/agents` (view, edit tools, edit model, save, cancel).
-- [ ] Update `CONTEXT.md` (remove the **Bus** entry).
+- [x] Update `CONTEXT.md` (remove the **Bus** entry).
 - [ ] Commit each numbered item separately (transport+delete, schemas, hints, cursor, settings chromes, glossary).
 
 **Acceptance criteria:**
-- [ ] `grep -rn "core/bus\|bus\.js" packages/*/src meta/src --include=*.ts | grep -v "\.test\.ts"` is empty, `packages/core/package.json` has no `"./bus"` entry, and `CONTEXT.md` has no **Bus** entry.
+- [x] `grep -rn "core/bus\|bus\.js" packages/*/src meta/src --include=*.ts | grep -v "\.test\.ts"` is empty, `packages/core/package.json` has no `"./bus"` entry, and `CONTEXT.md` has no **Bus** entry.
 - [ ] Every declared `outputSchema` matches the `structuredContent` actually returned.
 - [ ] `subagent` and `ask` are `model-only`; `sudo_exec` carries `destructiveHint`; web tools carry `openWorldHint`; no tool is `codemode`/`deferred`.
 - [ ] `/archimedes` and `/agents` behave as before on the new components; one settings chrome remains.

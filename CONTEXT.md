@@ -4,9 +4,9 @@ Visual polish and useful context for the Pi coding agent TUI — a pnpm workspac
 
 ## Language
 
-**Bus**:
-The global pub/sub event system (`globalThis` Symbol) that packages use to communicate. Events include `COST_UPDATE`, `ASK_REQUEST`, `TODOS_UPDATE`, `TODOS_CLEAR`.
-_Avoid_: Event bus, message bus, event emitter
+**Channel**:
+A named message that packages use to talk to each other, carried by the host's event bus (`pi.events`). The six names and their payload shapes live in `packages/core/src/events.ts`, which holds no transport; the emitter and the listener each hold their own handle. Channels: `cost_update`, `todos_update`, `todos_clear`, `ask_request`, `ask_response`, `ask_cancel`.
+_Avoid_: Bus (the `globalThis` singleton that carried these was retired in favour of `pi.events`, ADR 0029), pub/sub, event emitter, topic
 
 **Meta**:
 The orchestrator package (`pi-archimedes`) that depends on all component packages, wires cross-package concerns, and composes the settings UI.
