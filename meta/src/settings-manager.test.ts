@@ -344,6 +344,41 @@ describe("value stepping", () => {
 // ── Cursor movement ─────────────────────────────────────────────────────────
 
 describe("cursor movement", () => {
+  it("puts the cursor on the first match when a filter narrows past its end, and steps that row", async () => {
+    // The wrapper mirrors the list's cursor index, so the mirror and the drawn
+    // cursor must agree after every path that changes the row set. Park the
+    // cursor past the end of what the query will keep, narrow the list out from
+    // under it, then walk it: every step has to write the row drawn under the
+    // cursor. A mirror left pointing at the old index addresses a row that is no
+    // longer there, and the write silently vanishes.
+    const items = await realItems();
+    const query = "style";
+    const kept = items.filter((i) => i.label.toLowerCase().includes(query));
+    expect(kept.length).toBeGreaterThan(1);
+    const h = createHarness(items);
+    to(h, kept.length + 1); // deep in the full list, past the end of `kept`
+    h.press("/");
+    h.type(query);
+    const cursorRow = (): string =>
+      (h
+        .render()
+        .map((l) => stripTerminalSequences(l))
+        .find((l) => /[>→]/.test(l)) ?? "").replace(/.*[>→]\s*/, "");
+    // The cursor reset to the top of the narrowed set.
+    expect(cursorRow()).toContain(kept[0]!.label);
+    const writes: Array<[string, string]> = [];
+    for (let n = 0; n < kept.length; n++) {
+      const onCursor = kept.find((i) => cursorRow().includes(i.label));
+      expect(onCursor, `no kept row under the cursor at ${n}`).toBeDefined();
+      if (onCursor?.values && onCursor.values.length > 1) {
+        h.press(KEY.right);
+        writes.push([onCursor.id, step(onCursor.values, onCursor.currentValue, 1)]);
+        expect(h.changes).toEqual(writes);
+      }
+      h.press(KEY.down);
+    }
+    expect(writes.length, "the narrowed set has nothing to step").toBeGreaterThan(0);
+  });
   it("wraps up from the first row to the last and down from the last to the first", async () => {
     const items = await realItems();
     const h = createHarness(items);

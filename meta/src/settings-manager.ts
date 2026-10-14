@@ -24,9 +24,23 @@
  * - **← / → stepping.** `SettingsList` cycles a value on Enter/Space only and
  *   exposes no way to read which row it has selected, so the cursor index is
  *   mirrored here (`move()` drives the list with `selectItem`) and the arrows
- *   step against it. Enter/Space are forwarded untouched, which is what makes
- *   the free-input row work: an editable item carries a `submenu`, and pi's
- *   component opens whatever component that returns.
+ *   step against it. The mirror is addressed by `item.id`, so the caller's ids
+ *   have to be unique: with two rows sharing one, `selectItem` finds the first
+ *   and the drawn cursor and the mirrored index part company. Everything else
+ *   about a row is keyed by id as well (the label map, `prompts`, the write
+ *   guard), so uniqueness is a precondition of the panel rather than of the
+ *   mirror. The wrapper forwards every keystroke it does not consume itself and
+ *   exposes no `handleMouse`, so nothing can move the list's own index behind
+ *   the mirror's back — but `SettingsList` does implement `handleMouse`, and
+ *   that silence is the wrapper's, not the component's.
+ *   Enter/Space are forwarded untouched, which is what makes the free-input row
+ *   work: an editable item carries a `submenu`, and pi's component opens
+ *   whatever component that returns.
+ *
+ * The rows are copied out of `opts.items` once, at construction: the panel does
+ * not notice rows added to or removed from the caller's array while it is open,
+ * and `onChange` — not the array — is how a new value reaches the caller.
+ * Neither call site touches its array after opening.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
