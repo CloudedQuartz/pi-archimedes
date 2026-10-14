@@ -1152,6 +1152,25 @@ describe("runNativePasteRestore — the caller surfaces the outcome (once per pr
     expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(foreign);
   });
 
+  it("the untouched warning also says the paste key is left unbound, because the flag took our shortcut with it", async () => {
+    // Since the shortcut gate exists, an untouched file is not merely "we did
+    // not help you": with `suppressNativePaste: false` image-paste registers no
+    // paste shortcut either, so between the warning and the user's edit the key
+    // does NOTHING. Saying only "remove the entry and run /reload" would let
+    // the user conclude that image-paste broke the key.
+    askForNativePaste();
+    const foreign = `{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`;
+    writeKeybindings(foreign);
+    const { ctx, notify } = makeCtx("tui");
+
+    await runNativePasteRestore(ctx);
+
+    const [message] = notify.mock.calls[0] as [string, string];
+    expect(message).toMatch(/not binding the paste key/i);
+    expect(message).toMatch(/does nothing/i);
+    expect(message).toContain(UNBIND_KEY);
+  });
+
   it("a plain second session_start in the same process stays silent for the same untouched file", async () => {
     askForNativePaste();
     const foreign = `{ "${UNBIND_KEY}": [], "app.editor.newLine": ["ctrl+enter"] }`;

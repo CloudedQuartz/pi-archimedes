@@ -2,9 +2,13 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 // The standalone session_start handler drives the native-paste restore, so the
 // wiring test mocks that module (hermetic: nothing may touch the real
-// ~/.pi/agent/keybindings.json from a unit test) and asserts the call.
+// ~/.pi/agent/keybindings.json from a unit test) and asserts the call. The
+// shortcut gate lives in the same module and is mocked to "suite keeps the key"
+// here so this file tests wiring only; the gate itself is tested, against real
+// settings, in shortcut-gate.test.ts.
 vi.mock("./keybinding-offer.js", () => ({
   runNativePasteRestore: vi.fn(async () => ({ kind: "suppressed" })),
+  suiteMayClaimPasteKey: vi.fn(() => true),
 }));
 
 const { runNativePasteRestore } = await import("./keybinding-offer.js");

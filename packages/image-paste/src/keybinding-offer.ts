@@ -79,6 +79,36 @@ interface ImagePasteConfig {
  */
 const IMAGE_PASTE_DEFAULTS: ImagePasteConfig = { suppressNativePaste: true };
 
+/**
+ * Whether the suite may claim pi's paste key(s) for itself this session.
+ *
+ * `true` (the default) is today's behaviour: image-paste registers the paste
+ * shortcuts and pi's native `app.clipboard.pasteImage` stays unbound. `false` —
+ * the strict boolean, same rule as {@link runNativePasteRestore} — asks for the
+ * key back, and then BOTH halves of the promise apply: the file restore removes
+ * our unbinding from `keybindings.json`, AND `registerImagePaste` registers no
+ * shortcut, so the restored native binding is actually reachable.
+ *
+ * Why the second half is needed (pi 1.2.0, measured): `app.clipboard.pasteImage`
+ * is not in `RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS` (`dist/core/
+ * extensions/runner.js:9-27`), so `restrictOverride === false` and
+ * `ExtensionRunner.getShortcuts` keeps the extension shortcut and prints "…
+ * Using `<ext>`" (`dist/core/extensions/runner.js:467-474`); and
+ * `CustomEditor.handleInput` consults `onExtensionShortcut` before its
+ * `app.clipboard.pasteImage` branch and returns (`dist/modes/interactive/
+ * components/custom-editor.js:63-70`). While we hold the shortcut, an empty
+ * keybinding entry therefore changes nothing except adding a shortcut-conflict
+ * diagnostic — the key only comes back when we stop claiming it.
+ *
+ * Read per call, never cached at module scope: pi caches the extension factory
+ * (`dist/core/extensions/loader.js:461-489`) but re-invokes it per session, and
+ * the composed suite calls the registration from its own `session_start`
+ * handler, so a module-level flag would freeze the first session's answer.
+ */
+export function suiteMayClaimPasteKey(): boolean {
+  return loadConfig<ImagePasteConfig>(NAMESPACE, IMAGE_PASTE_DEFAULTS).suppressNativePaste !== false;
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -507,9 +537,9 @@ function describeRestoreStatus(status: RestoreNativePasteStatus): string {
 export async function runNativePasteRestore(
   ctx: ExtensionContext,
 ): Promise<NativePasteRestoreOutcome> {
-  if (
-    loadConfig<ImagePasteConfig>(NAMESPACE, IMAGE_PASTE_DEFAULTS).suppressNativePaste !== false
-  ) {
+  // Same predicate the shortcut gate reads, so the file restore and the
+  // registration can never disagree about what the user asked for.
+  if (suiteMayClaimPasteKey()) {
     return { kind: "suppressed" };
   }
 
@@ -521,7 +551,9 @@ export async function runNativePasteRestore(
 
   if (status.kind === "untouched" || status.kind === "failed") {
     // Both mean "we did not touch it, and only you can" — one actionable
-    // warning naming the path and the key, spent at most once per process.
+    // warning naming the path plus the key, spent at most once per process, and
+    // saying plainly that the paste key is unbound in the meantime (the
+    // shortcut gate is off for this same setting, so nothing answers it).
     // NOTE the deliberate corner: a file holding only foreign keys and no
     // `app.clipboard.pasteImage` entry lands here too (pi's action is already
     // live in that case). We still never touch the file, and the message names
@@ -529,8 +561,15 @@ export async function runNativePasteRestore(
     if (ctx.hasUI && claimRestoreNotice()) {
       const failure =
         status.kind === "failed" ? `The write failed (${status.error}). ` : "";
+      // The second sentence is the new half of the promise: with the flag off
+      // image-paste registers NO paste shortcut, so a file we may not rewrite
+      // leaves the key unbound by anyone. Without it the warning reads like
+      // "nothing changed", and a dead Ctrl+V looks like a broken extension
+      // rather than the state the setting describes.
       ctx.ui.notify(
-        `image-paste did not change ${status.path}. ${failure}${status.manualEdit}`,
+        `image-paste did not change ${status.path}. ${failure}${status.manualEdit} ` +
+          "image-paste is not binding the paste key either (suppressNativePaste is off), " +
+          "so that key does nothing until you do.",
         "warning",
       );
     }

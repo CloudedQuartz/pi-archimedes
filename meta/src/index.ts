@@ -191,12 +191,16 @@ export default function (pi: ExtensionAPI): void {
 
     // ── Native-paste restoration (ADR 0030 amendment, 2026-10-13) ──
     // `archimedes.imagePaste.suppressNativePaste: false` hands ctrl+v back to
-    // pi by deleting the suite's own `app.clipboard.pasteImage` unbinding from
-    // ~/.pi/agent/keybindings.json. Gated on ipMod: the registration gate is
-    // what ADR 0012 permits (a package never reads its own `enabled` flag), so a
-    // disabled image-paste never reaches into the file. Deliberately the LAST
-    // thing in this handler — a successful restore can call ctx.reload(), which
-    // invalidates this ctx, so nothing may use it afterwards.
+    // pi in two halves: this call deletes the suite's own
+    // `app.clipboard.pasteImage` unbinding from
+    // ~/.pi/agent/keybindings.json, and the gate inside `registerImagePaste`
+    // (above) stops image-paste registering a shortcut for the key — without it
+    // pi 1.2.0 keeps the extension shortcut and the restored binding never
+    // runs. Gated on ipMod: the registration gate is what ADR 0012 permits (a
+    // package never reads its own `enabled` flag), so a disabled image-paste
+    // never reaches into the file. Deliberately the LAST thing in this handler —
+    // a successful restore can call ctx.reload(), which invalidates this ctx, so
+    // nothing may use it afterwards.
     if (ipMod) {
       try {
         await runNativePasteRestore(ctx);
