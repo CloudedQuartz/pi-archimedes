@@ -32,6 +32,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   Input,
+  Key,
   SettingsList,
   decodeKittyPrintable,
   getKeybindings,
@@ -325,11 +326,18 @@ export function createSettingsManager(opts: SettingsManagerOptions): {
       move(1);
       return;
     }
-    if (kb.matches(data, "tui.editor.cursorLeft")) {
+    // Value stepping is the arrow keys and only the arrow keys. The editor
+    // actions `tui.editor.cursorLeft` / `cursorRight` also carry ctrl+b and
+    // ctrl+f, and a keystroke typed out of editor habit must not change a
+    // setting — in `/plugins` that write reaches the disk immediately. The
+    // footer advertises `[←→] value` and `SettingsList` has no left/right of its
+    // own to inherit, so the arrows are the whole contract; matching them by
+    // name keeps a Kitty CSI-u terminal's arrows working.
+    if (matchesKey(data, Key.left)) {
       stepValue(-1);
       return;
     }
-    if (kb.matches(data, "tui.editor.cursorRight")) {
+    if (matchesKey(data, Key.right)) {
       stepValue(1);
       return;
     }

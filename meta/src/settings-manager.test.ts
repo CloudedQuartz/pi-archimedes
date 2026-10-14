@@ -289,6 +289,32 @@ describe("value stepping", () => {
     expect(h.changes).toEqual([]);
   });
 
+  it("does not step on ctrl+b / ctrl+f, which are editor bindings, not the arrows", async () => {
+    // `tui.editor.cursorLeft` / `cursorRight` also carry ctrl+b and ctrl+f.
+    // Honouring the action here meant a keystroke typed out of editor habit
+    // changed a setting — and in `/plugins` that write is persisted on the spot.
+    // The footer advertises `[←→] value`, so the arrows are the whole contract.
+    const items = await realItems();
+    const h = createHarness(items);
+    h.press("\x02"); // ctrl+b
+    h.press("\x06"); // ctrl+f
+    expect(h.changes).toEqual([]);
+    expect(h.saves).toBe(0);
+    expect(h.closes).toBe(0);
+    // …while the arrows still step, in both directions.
+    h.press(KEY.right);
+    h.press(KEY.left);
+    expect(h.changes.length).toBe(2);
+  });
+
+  it("still steps on a Kitty CSI-u arrow", async () => {
+    // The arrows are matched by name, so a CSI-u terminal keeps them.
+    const items = await realItems();
+    const h = createHarness(items);
+    h.press("\x1b[1;1C"); // right, CSI-u encoded
+    expect(h.changes.length).toBe(1);
+  });
+
   it("steps the row the cursor is on, not some other row", async () => {
     const items = await realItems();
     const item = items[idxOf(items, "toolStyle")]!;
