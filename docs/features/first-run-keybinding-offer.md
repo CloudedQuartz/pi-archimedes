@@ -49,6 +49,35 @@ the generated snippet is checked against that published schema.
 > See ADR 0030 (`docs/decisions/0030-image-paste-superset-not-supplement.md`) and
 > the package-facing write-up in `docs/features/image-paste.md`.
 
+## The trade, and why the offer exists at all
+
+Accepting the offer buys one thing and costs the possibility of another, and
+ADR 0030 keeps that bargain under a condition rather than in the abstract:
+
+- **What pi does on the key.** `app.clipboard.pasteImage` is documented as
+  "Paste files on macOS, images, or text from clipboard" — three branches, on
+  `ctrl+v` (`alt+v` on Windows/WSL).
+- **What we had, and what we have.** Our handler used to cover images only, so
+  a user who accepted the offer silently lost two behaviours to gain one —
+  silently, because the key still appeared to work. `dispatchClipboardPaste`
+  now covers all three, in this precedence: **image → file paths → text**. The
+  order is deliberately *not* pi's native one (paths → image → text,
+  `interactive-mode.js:2500-2530`): we own the key in order to attach images,
+  so an image has to win, and the code says so where it is written
+  (`packages/image-paste/src/index.ts`, the numbered branches). File paths come
+  from `getNativeClipboard()?.getFilePaths?.()` and are inserted with pi's own
+  spacing and control-character guards; exactly one branch runs per keypress.
+- **What is genuinely ours.** Attaching clipboard bytes as image blocks, the
+  multi-image queue with `[Image #n]` markers, and the inline preview. pi's own
+  user-message component renders no images, and its dispatcher
+  (`readClipboardImage`) is not exported, so there is nothing to delegate to in
+  either direction.
+
+The standing consequence is that whoever owns the key owns its whole meaning: if
+pi adds a fourth clipboard branch (it added `getFilePaths?()` in the 1.x line),
+our key silently loses it again. The parity check is a test, and the floating
+`pi@latest` job (ADR 0026) is where the drift surfaces.
+
 ## Gates (evaluated in order)
 
 1. **Config enabled** — `isConfigEnabled("archimedes.imagePaste")` must return
@@ -60,7 +89,13 @@ the generated snippet is checked against that published schema.
    non-TUI modes (`rpc`, `json`, `print`), so a later TUI session still gets
    the offer.
 3. **Flag unset** — `loadConfig("archimedes.imagePaste", { keybindingsPromptDone: false }).keybindingsPromptDone !== true`.
-4. **File absent** — `!existsSync(join(getAgentDir(), "keybindings.json"))`.
+4. **File absent** — `!existsSync(join(getAgentDir(), "keybindings.json"))`. This
+   is the gate that makes the offer "never edits a file you wrote", and it is a
+   rule about **this flow only**. ADR 0030's 2026-10-13 amendment carves the one
+   exception in the suite, for the separate restore flow below: `suppressNativePaste: false`
+   *is* allowed to rewrite an existing `keybindings.json`, but only when the file
+   parses to the artefact this offer itself wrote. Nothing about gate 4 changes for
+   the offer — it still creates the file or nothing.
 5. **Confirm** — `ctx.ui.confirm(title, message)` (title first, per Pi API).
 
 ## Offer-once semantics
@@ -214,8 +249,80 @@ below) and does not give anyone their key back:
    nothing else routes a keypress to our handler; the submit-time marker
    attachment and the preview renderer stay registered.
 
+### What the extension will never touch
+
+The rewrite is "delete our key", never "rewrite the object we think you meant".
+`restoreNativePaste()` leaves the file byte-for-byte alone — and returns an
+`"untouched"` (or `"failed"`) status naming the path — for every one of these:
+
+- any additional key besides the suite's unbinding and its own `$schema`;
+- a `$schema` whose value is not Pi's published URL (ours counts as ours only
+  with that exact URL, which keeps the accept-set closed instead of widening it);
+- a non-empty `app.clipboard.pasteImage` value — that binding is the user's;
+- `"pasteImage": []`, Pi's **pre-rename** name for the same action
+  (`KEYBINDING_NAME_MIGRATIONS`, `keybindings.js:225`). It unbinds the action
+  just as effectively, and we still refuse to rewrite it, because this suite
+  never wrote that spelling;
+- content that does not parse, a root value that is not a JSON object, or a file
+  we cannot read.
+
+A **dangling symlink** is not in that list because it is never seen: `existsSync`
+follows links, so the status is `"missing"` and nothing is written through the
+link. A live symlink is preserved — the restore writes through
+`writeAtomicPreservingSymlinks` (`@pi-archimedes/core/settings-io`), so a
+`keybindings.json` pointing into a dotfiles repo stays a link. The offer's own
+`writeFileSync` + `renameSync` pair is deliberately *not* reused here: it only
+ever creates a missing file, where link preservation cannot matter.
+
+### The never-touch case notifies once per process, and survives `/reload`
+
+An `"untouched"` or `"failed"` outcome is actionable, so it gets more than a log
+line: the caller (`runNativePasteRestore`) emits one
+`ctx.ui.notify(…, "warning")` naming the file — with the per-refusal guidance the
+status carries (`manualEdit`) — **at most once per process**. `diag("image-paste", …)`
+carries the detail on every outcome, and both may fire, but `diag` cannot be the
+only channel: it is a no-op unless `PI_ARCHIMEDES_LOG` names a file, so a default
+install would be silent while the user's paste key did nothing.
+
+The guard is `globalThis[Symbol.for("pi-archimedes:image-paste:restore-notified")]`,
+and **module scope cannot work here**: pi re-evaluates an extension module on
+every load — `loadExtensionModule()` builds a fresh jiti with `moduleCache: false`
+(`loader.js:477-481`) and `ctx.reload()` clears the cached factory first
+(`resource-loader.js:359` → `clearExtensionCache()`) — so a `let warned = false`
+is re-created by `/reload` and the same untouched file gets re-declared. Both
+codebases already use this exact technique for this exact reason: pi keeps its
+theme on `globalThis` under a `Symbol.for` key ("share theme across module
+loaders (node + jiti in dev mode)", `theme.js:500-517`), and our own deleted
+`packages/core/src/bus.ts` was a `globalThis` singleton for the same purpose.
+
+Two consequences the tests pin:
+
+- **"Once" means per process, not per session.** `packages/image-paste/src/keybinding-offer.test.ts`
+  proves it by *re-importing* the module (`vi.resetModules()` then a dynamic
+  `import(…)`, which is what `/reload` does to the module registry while
+  `globalThis` survives it) and asserting no second `ctx.ui.notify`. Asserting a
+  second `session_start` would not be enough: a module-level flag passes that and
+  still re-warns after `/reload`. A plain second `session_start` also stays silent.
+- **A headless run does not spend the guard.** No notify fires at all when
+  `ctx.hasUI` is false — on any outcome, including a successful restore, whose
+  info and `/reload`-hint texts are UI messages too.
+
+The message is not one sentence for every refusal, because the refusals are not
+one situation (issue #127): a file still holding an unbinding of the paste action
+leaves the key bound to nobody while the flag is off, a file of foreign keys or a
+`$schema`-only file never bound it so Pi's own paste answers the key, and a file
+Pi cannot parse is discarded whole (`keybindings.js:285-297`) so every action
+keeps its default. Only the first group is asked to remove an entry, and it is
+named the way the file spells it. `diag` receives the **same** string the warning
+shows, asserted rather than intended, so log and screen cannot tell two stories
+about one file.
+
 Both halves are evaluated per session (Pi caches the extension factory but
-re-invokes it per session; meta registers from its `session_start` handler).
+re-invokes it per session; meta registers from its `session_start` handler), and
+`runNativePasteRestore` runs from whichever path loaded the package — the
+package's own top-level `session_start` registration for a standalone install,
+meta's composed `session_start` for the suite — exactly once per session, never
+from a nested handler (AGENTS.md).
 
 Measured live on Pi 1.2.0 in a scratch `PI_CODING_AGENT_DIR` with a stubbed
 clipboard (`wl-paste` on `PATH` advertising `image/png`): flag off with the
