@@ -69,6 +69,8 @@ const CONCURRENT_CONTENT = '{ "app.clipboard.pasteImage": ["ctrl+v"] }';
 
 
 const settingsPath = (): string => join(tempDir, "settings.json");
+/** The title the offer passes to `ctx.ui.confirm` (title first, per Pi API). */
+const CONFIRM_TITLE_FOR_TEST = "First run";
 const keybindingsPath = (): string => join(tempDir, "keybindings.json");
 const tmpPath = (): string => `${keybindingsPath()}.${process.pid}.tmp`;
 
@@ -110,11 +112,12 @@ function makeCtx(mode: Mode, opts?: { withReload?: boolean; hasUI?: boolean }) {
   const confirm = vi.fn();
   const notify = vi.fn();
   // Intentionally mirrors the base ExtensionContext the real session_start
-  // handler receives: no command-only methods like `reload` (Pi 0.85.1
-  // attaches reload to the command context only), so tests stay honest about
-  // what the real ctx provides. The auto-reload branch is covered separately
-  // by passing { withReload: true }, which simulates a future Pi version
-  // that puts reload() on the event ctx.
+  // handler receives: no command-only methods like `reload`. Measured on Pi
+  // 1.2.0 in a real session — the notify the restore produced was the
+  // "run /reload to apply" hint, i.e. the event ctx had no `reload` (it is
+  // attached to the command context only, `runner.js` `createCommandContext`).
+  // The auto-reload branch is covered separately by passing { withReload: true },
+  // which simulates a future Pi version that puts reload() on the event ctx.
   const reload = opts?.withReload ? vi.fn(async () => {}) : undefined;
   const ctx = {
     mode,
@@ -330,6 +333,30 @@ describe("file write throws → flag stays false (self-heals next session)", () 
     const [msg, type] = notify.mock.calls[0] as [string, string];
     expect(type).toBe("warning");
     expect(msg.length).toBeGreaterThan(0);
+  });
+});
+
+describe("the offer text tells the truth about the clash", () => {
+  it("does not promise a double-fire: with both bindings live Pi runs ONLY the extension shortcut", async () => {
+    // Measured on Pi 1.2.0 in a scratch agent dir with a stubbed clipboard
+    // (`keybindings.json` = `{}`, i.e. the built-in live, our shortcut
+    // registered): one `ctrl+v` produced exactly one insertion — ours
+    // (`[Image #1]` + "Image attached from clipboard.", no `pi-clipboard-*.png`
+    // temp file) — plus the `[Extension issues]` line "… Using <ext>".
+    // `CustomEditor.handleInput` consults `onExtensionShortcut` and returns
+    // before its `app.clipboard.pasteImage` branch (`custom-editor.js:63-70`),
+    // so nothing ever double-fired and the dialog must not say it does.
+    const { ctx, confirm } = makeCtx("tui");
+    confirm.mockResolvedValue(false);
+
+    await offerKeybindingFix(ctx);
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const [title, message] = confirm.mock.calls[0] as [string, string];
+    expect(title).toBe(CONFIRM_TITLE_FOR_TEST);
+    expect(message).not.toMatch(/double-?fir/i);
+    expect(message).toMatch(/never runs its own action/i);
+    expect(message).toContain("Extension issues");
   });
 });
 

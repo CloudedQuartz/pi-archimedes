@@ -21,10 +21,18 @@ const UNBIND_KEY = "app.clipboard.pasteImage";
 const PI_KEYBINDINGS_SCHEMA_URL = "https://pi.dev/schemas/keybindings.schema.json";
 
 const CONFIRM_TITLE = "First run";
+// Wording is measured, not assumed: on Pi 1.2.0 the two bindings do NOT both
+// run. `app.clipboard.pasteImage` is not on pi's reserved-keybinding list, so
+// the extension shortcut wins (`runner.js:467-474`) and `handleInput` returns
+// before the built-in's paste branch (`custom-editor.js:63-70`) — what the user
+// gets without this file is one paste (ours) plus a standing `[Extension
+// issues]` line, not two pastes.
 const CONFIRM_MESSAGE =
   "~/.pi/agent/keybindings.json is missing. Without it, Pi's built-in " +
   "app.clipboard.pasteImage binding (Ctrl+V on Linux/macOS, Alt+V on Windows) " +
-  "double-fires with image-paste's Ctrl+V handler. Create the file now with the " +
+  "shares the paste key with image-paste's handler: image-paste's handler wins, " +
+  "Pi never runs its own action, and every session starts with an " +
+  "[Extension issues] shortcut-conflict line. Create the file now with the " +
   "docs snippet? It clears the built-in binding (/reload applies it).";
 
 /**
@@ -182,7 +190,10 @@ function markPromptDone(ctx: ExtensionContext): void {
  *
  * On the first TUI session, if `~/.pi/agent/keybindings.json` does not exist,
  * offer to create it with the docs snippet so Pi's built-in clipboard paste
- * doesn't double-fire with image-paste's Ctrl+V handler. Accepting writes the
+ * doesn't share the key with an action that would otherwise win — with both
+ * bindings live image-paste's handler is the one that runs, pi's own action
+ * never fires, and the session starts with a `[Extension issues]`
+ * shortcut-conflict line. Accepting writes the
  * file (atomic tmp+rename, pre-rename existence re-check) and then sets the
  * one-shot flag and, when the runtime exposes `reload()` on the session ctx,
  * reloads the TUI (the exact /reload flow: re-reads keybindings.json and
@@ -300,8 +311,12 @@ export async function offerKeybindingFix(ctx: ExtensionContext): Promise<boolean
 // first-run offer: they hold `~/.pi/agent/keybindings.json` containing our
 // unbinding, which is exactly why pi's native `app.clipboard.pasteImage` is
 // dead. So `archimedes.imagePaste.suppressNativePaste: false` has to give the
-// key back by deleting our own artefact from that file — the narrow exception
-// to gate 4's "never rewrite an existing user keybindings file" rule. See
+// key back in TWO halves: delete our own artefact from that file — the narrow
+// exception to gate 4's "never rewrite an existing user keybindings file" rule —
+// and stop claiming the key, which `registerImagePaste` does from the same
+// setting (`suiteMayClaimPasteKey`). Removing the unbinding alone is not enough:
+// while our shortcut is registered pi keeps it and the restored binding never
+// runs. See
 // docs/decisions/0030-image-paste-superset-not-supplement.md § Amendment.
 
 /**
