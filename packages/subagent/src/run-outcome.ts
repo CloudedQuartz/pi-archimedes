@@ -21,11 +21,11 @@ import type { RunOutcome } from "./types.js";
 // | `agent_settled.aborted: true`                               | aborted     |
 // | last assistant `stopReason: "aborted"`                      | aborted     |
 // | killed by a cancellation signal (SIGKILL/SIGINT — uncaught) | aborted     |
+// | killed by an unexpected signal (SIGSEGV, …)                 | failed      |
 // | exit 143 / 129 (pi caught SIGTERM / SIGHUP and exited)      | aborted     |
 // | last assistant `stopReason: "error"`                        | failed      |
-// | any other nonzero exit                                      | failed      |
-// | killed by an unexpected signal (SIGSEGV, …)                 | failed      |
 // | last assistant `stopReason: "length"` — exit 0 **or** 1     | truncated   |
+// | any other nonzero exit                                      | failed      |
 // | exit 0, nothing above matched                               | completed   |
 //
 // `truncated` is not an error and neither is `aborted`; `failed` is, and is what
@@ -62,8 +62,13 @@ export interface RunOutcomeInput {
  * Decide the run's terminal state, or `failed` when the run did not reach one.
  *
  * Order is the table above: cancellation first (an aborted run's `stopReason` may
- * be `error` or `length` on the way out), then the child's own account of how its
- * last response ended, then the exit code — the least informative of the three.
+ * be `error` or `length` on the way out), then a signal death — which is decided
+ * before `stopReason`, because a killed child's last message says nothing about
+ * how it died — then the child's own account of how its last response ended
+ * (`error`, then `length`), then the exit code, which is the least informative of
+ * the three and therefore last. That last ordering is the whole point of the
+ * 1.2.0 change: exit 1 arrives for a crash and for a truncated answer alike, so
+ * `length` has to be read before the exit code or the distinction is lost again.
  */
 export function decideRunOutcome(input: RunOutcomeInput): RunOutcome | "failed" {
   if (input.settledAborted) return "aborted";
