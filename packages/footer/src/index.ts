@@ -8,6 +8,16 @@
  * - below splitThreshold (default 150) → at least two lines, as configured
  * - oversized extension statuses are word-wrapped into multiple chunks so no
  *   content is ever truncated by truncateToWidth
+ *
+ * Ours vs pi's data (docs/features/footer.md):
+ * - pi's own data, read straight from the host: model (`ctx.model`), thinking
+ *   (`pi.getThinkingLevel()`), tokens/cost and context (session entries and
+ *   `ctx.getContextUsage()`), branch (`footerData.getGitBranch()`) and the
+ *   `ctx.ui.setStatus()` texts (`footerData.getExtensionStatuses()`). pi's own
+ *   FooterComponent renders the same numbers from the same sources.
+ * - ours: the jj bookmark and jj changed-file count, the linked-worktree
+ *   marker, the git status counts, the context bar, and the packing that wraps
+ *   instead of truncating.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -59,9 +69,10 @@ export function registerFooter(pi: ExtensionAPI): void {
         render(width: number): string[] {
           try {
             const colorize = (token: string, s: string) => theme.fg(token as any, s);
-            const activeModel = ctx.model?.id || "no-model";
+            const activeModel = ctx.model?.id || "no-model"; // pi's own session state
+            // --- ours: jj support and the worktree marker have no pi equivalent ---
             const jjBookmark = getJjBookmark();
-            const currentBranch = jjBookmark ?? footerData.getGitBranch();
+            const currentBranch = jjBookmark ?? footerData.getGitBranch(); // branch itself is pi's
             const currentDirectory = process.cwd().split("/").pop() || process.cwd();
             // jj repos never run git: jj's changed-file count fills the "unstaged" (~N) slot
             const gitStatus = jjBookmark !== null
@@ -88,7 +99,8 @@ export function registerFooter(pi: ExtensionAPI): void {
 
             // ── Sections ──────────────────────────────────────────────────
 
-            const thinkingIndicatorStr = formatThinkingIndicator(thinkingLevel, colorize);
+            const thinkingIndicatorStr = formatThinkingIndicator(thinkingLevel, colorize); // pi's level, our glyph
+            // --- ours: pi's footer shows the branch name, never its state ---
             const gitStatusStr = formatGitStatusIndicators(gitStatus, colorize);
 
             const branchIcon = inWorktree ? footerIcons.worktree : footerIcons.branch;
