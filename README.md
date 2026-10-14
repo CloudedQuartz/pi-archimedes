@@ -23,7 +23,10 @@ One command:
 pi install npm:pi-archimedes
 ```
 
-Your `~/.pi/agent/` stays as it is — Archimedes only adds its namespaces under `settings.json`. Pi's own `auth.json`, `keybindings.json`, agents, and sessions are untouched.
+Your `~/.pi/agent/` stays as it is: Archimedes adds its namespaces under `settings.json`, and Pi's own `auth.json` and your sessions are never written. Two files get written, by the features that own them.
+
+- **`keybindings.json`** — only ever about the paste key, and only via step 6 below. The offer writes the file **only when it is absent and only if you accept** (an existing file is never edited by the offer), and what it writes is the single `app.clipboard.pasteImage: []` unbinding. Setting `archimedes.imagePaste.suppressNativePaste: false` removes that entry again, leaving `{}`. Both directions act on **the suite's own entry only**: a file with any extra key, a different `$schema`, a non-empty binding, or JSON that does not parse is left byte-for-byte alone and you get a message naming the one line to delete. Your own bindings are never rewritten.
+- **`agents.local.json`**, plus any agent definition you create or edit with `/agents` — the subagent package's own files.
 
 Then run `/reload` in your session (or start a new one) to pick it up — that reloads the extensions *and* your keybindings, so any shortcuts you've customized in `~/.pi/agent/keybindings.json` keep working.
 
@@ -56,7 +59,7 @@ Then run `/reload` in your session (or start a new one) to pick it up — that r
    /model
    ```
 
-6. **Make image-paste own the paste keys** — Pi's built-in `app.clipboard.pasteImage` owns `Ctrl+V` (Linux/macOS) / `Alt+V` (Windows), and image-paste (on by default in the suite) binds the same keys — clear the built-in in `~/.pi/agent/keybindings.json` so image-paste takes them cleanly (otherwise both handlers fire on the shared key and the built-in throws warning banners; format in Pi's [keybindings docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md)). If the file doesn't exist yet, create it with:
+6. **Make image-paste own the paste keys** — Pi's built-in `app.clipboard.pasteImage` owns `Ctrl+V` (Linux/macOS) / `Alt+V` (Windows), and image-paste (on by default in the suite) binds the same keys — clear the built-in in `~/.pi/agent/keybindings.json` so image-paste takes them cleanly. Left as is, **only one handler runs**: an extension shortcut beats a non-reserved built-in, so Pi adds a `[Extension issues]` line (`Extension shortcut conflict: 'ctrl+v' is built-in shortcut for app.clipboard.pasteImage and <ext>. Using <ext>`) and its own action never fires — measured on Pi 1.2.0, one `Ctrl+V`, one insertion, the extension's (format in Pi's [keybindings docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md)). If the file doesn't exist yet, create it with:
 
    ```json
    {
@@ -67,7 +70,9 @@ Then run `/reload` in your session (or start a new one) to pick it up — that r
 
    The `$schema` line is optional (Pi skips that key when loading the file) — it exists so an editor or a standalone validator can check the file against Pi's published schema, and it's what the first-run offer below writes.
 
-   If it already exists, just add/set `"app.clipboard.pasteImage": []` in there and run `/reload`. Or skip the step entirely if the file doesn't exist yet: on the first TUI session the suite offers to create it automatically with the snippet above — accepting creates the file and attempts an automatic reload where the runtime supports it (on current Pi 0.85.1 you're notified to run `/reload`, and the cleared binding applies once it runs); declining or cancelling (Esc) never asks again.
+   If it already exists, just add/set `"app.clipboard.pasteImage": []` in there and run `/reload`. Or skip the step entirely if the file doesn't exist yet: on the first TUI session the suite offers to create it automatically with the snippet above — accepting creates the file and then tells you to run `/reload` (measured on Pi 1.2.0: the context an event handler receives has no `reload`, so the automatic path is a notification rather than a reload, and the cleared binding applies once you run it); declining or cancelling (Esc) never asks again.
+
+   **Want Pi's own paste back?** Set `archimedes.imagePaste.suppressNativePaste: false`. The suite removes its entry from `keybindings.json` (that entry only, and only when the file holds nothing else) **and** registers no paste shortcut at all, so Pi's native `app.clipboard.pasteImage` answers the key — `/new` or `/reload` applies it, no restart needed. The trade in one sentence: with that flag off you get Pi's paste and lose image-paste's image attach, queue and preview on the paste key, because no keypress reaches our handler until you turn it back on.
 
 `/login` signs you into a supported provider (subscription or API key) and `/model` selects a model from it. Model access comes through the providers you configure in Pi — Pi's [provider docs](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md) list the supported ones, and Archimedes doesn't ship a model of its own. For the broader first run, Pi's [quickstart](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/quickstart.md) is worth a read.
 

@@ -4,6 +4,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import type { KeyId } from "@earendil-works/pi-tui";
 
+import { diag, describeError } from "@pi-archimedes/core/log";
+
 import {
   buildPathInsertion,
   clipboardTextForEditor,
@@ -11,6 +13,7 @@ import {
   readClipboardImage,
   readClipboardText,
 } from "./clipboard.js";
+import { runNativePasteRestore, suiteMayClaimPasteKey } from "./keybinding-offer.js";
 import { registerImagePreview, sendPreviewMessage } from "./preview.js";
 import type { ClipboardImage, PendingImage, ImageMarker } from "./types.js";
 
@@ -156,6 +159,11 @@ export async function dispatchClipboardPaste(
 
 // ── Registration ────────────────────────────────────────────────
 
+/**
+ * The keys this package takes over from pi. They are only registered while the
+ * suite is allowed to claim them — see {@link suiteMayClaimPasteKey} and the
+ * gate in `registerImagePaste`.
+ */
 function getImagePasteShortcuts(): KeyId[] {
   if (process.platform === "win32") {
     return ["alt+v", "ctrl+alt+v"] as KeyId[];
@@ -172,28 +180,53 @@ export function registerImagePaste(pi: ExtensionAPI): void {
   // Register preview renderer (once)
   registerImagePreview(pi);
 
-  // Register shortcuts (once)
-  const pasteFromClipboard = async (ctx: ExtensionContext): Promise<void> => {
-    // Mutex: prevent concurrent paste operations. It is only ever held for as
-    // long as one keypress is willing to wait — every read it awaits is
-    // bounded (a `spawnSync` timeout per CLI candidate,
-    // `NATIVE_READ_TIMEOUT_MS` per native read) — because an unbounded read
-    // here would hold the mutex forever and take the key out of service.
-    if (_pasting) return;
-    if (!_queue || !ctx.hasUI) return;
-    _pasting = true;
-    try {
-      await dispatchClipboardPaste(ctx, _queue);
-    } finally {
-      _pasting = false;
-    }
-  };
+  // ── The paste shortcuts ─────────────────────────────────────────
+  //
+  // Gated on the settings, per session (ADR 0030 amendment). With
+  // `archimedes.imagePaste.suppressNativePaste: false` the user asked for pi's
+  // own paste, so this registers NOTHING: pi's restored `app.clipboard.pasteImage`
+  // binding is then the only thing bound to the key, and no route to
+  // `dispatchClipboardPaste` is left behind — the loop below is the package's
+  // single entry point to the paste path (no command alias, no second
+  // registration; `grep dispatchClipboardPaste` finds only this file and tests).
+  // Handing the key back costs the image attach/queue/preview on it, which is
+  // exactly the trade the setting asks for; the rest of the package (the
+  // submit-time marker attachment and the preview renderer above) stays wired.
+  //
+  // The predicate is read here, not at module scope, because pi caches the
+  // extension factory but re-runs it for every session, and meta calls this
+  // function from its own `session_start` handler — so each session gets its own
+  // answer, and a `/reload` or `/new` after editing settings.json takes effect
+  // without a restart.
+  if (suiteMayClaimPasteKey()) {
+    const pasteFromClipboard = async (ctx: ExtensionContext): Promise<void> => {
+      // Mutex: prevent concurrent paste operations. It is only ever held for as
+      // long as one keypress is willing to wait — every read it awaits is
+      // bounded (a `spawnSync` timeout per CLI candidate,
+      // `NATIVE_READ_TIMEOUT_MS` per native read) — because an unbounded read
+      // here would hold the mutex forever and take the key out of service.
+      if (_pasting) return;
+      if (!_queue || !ctx.hasUI) return;
+      _pasting = true;
+      try {
+        await dispatchClipboardPaste(ctx, _queue);
+      } finally {
+        _pasting = false;
+      }
+    };
 
-  for (const shortcut of getImagePasteShortcuts()) {
-    pi.registerShortcut(shortcut, {
-      description: "Paste clipboard image, file paths, or text",
-      handler: pasteFromClipboard,
-    });
+    for (const shortcut of getImagePasteShortcuts()) {
+      pi.registerShortcut(shortcut, {
+        description: "Paste clipboard image, file paths, or text",
+        handler: pasteFromClipboard,
+      });
+    }
+  } else {
+    diag(
+      "image-paste",
+      "[archimedes:image-paste] suppressNativePaste is false — registering no paste shortcut; " +
+        `${getImagePasteShortcuts().join(", ")} stay with pi's own clipboard action`,
+    );
   }
 
   // Input event handler — attach images on submit (once)
@@ -284,8 +317,29 @@ export function shutdownImagePaste(): void {
 export default function (pi: ExtensionAPI): void {
   registerImagePaste(pi);
   // Session lifecycle: pi requires per-session ctx for image pasting.
-  pi.on("session_start", (_event, ctx) => {
+  //
+  // Registered at the TOP LEVEL of this factory — never inside another
+  // session_start handler, which would accumulate handlers on /reload
+  // (AGENTS.md). This is also the standalone call site for the native-paste
+  // restoration (ADR 0030 amendment, `suppressNativePaste: false` gives
+  // ctrl+v back to pi); the composed suite runs the same call from its own
+  // session_start handler in meta/src/index.ts, so exactly one path runs it
+  // per session — whichever one loaded the package. Giving the key back has two
+  // halves and they live in different places: this call removes our unbinding
+  // from keybindings.json, and the gate in `registerImagePaste` above stops us
+  // claiming the key. Both read the same setting per session.
+  pi.on("session_start", async (_event, ctx) => {
     initImagePasteSession(ctx);
+    // A broken keybindings.json must never fail a session start; the detail
+    // goes to the log sink, never the console.
+    try {
+      await runNativePasteRestore(ctx);
+    } catch (error) {
+      diag(
+        "image-paste",
+        `[archimedes:image-paste] native paste restore failed: ${describeError(error)}`,
+      );
+    }
   });
   pi.on("session_shutdown", (_event, _ctx) => {
     shutdownImagePaste();

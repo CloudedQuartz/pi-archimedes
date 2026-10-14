@@ -20,7 +20,12 @@ import { registerSudo } from "@pi-archimedes/sudo";
 // Light module from the image-paste package (no heavy deps) — the offer
 // gates are self-contained, so it is statically imported and sequenced in
 // the first-run session_start handler below, before the lazy-load.
-import { offerKeybindingFix } from "@pi-archimedes/image-paste/keybinding-offer";
+// `runNativePasteRestore` is the composed-suite call site for the same module
+// (ADR 0030 amendment — see the bottom of the lazy-load session_start handler).
+import {
+  offerKeybindingFix,
+  runNativePasteRestore,
+} from "@pi-archimedes/image-paste/keybinding-offer";
 import { runOnboarding } from "./onboarding/index.js";
 import { loadDiffConfig } from "./config.js";
 import { openSettings } from "./settings.js"
@@ -182,6 +187,26 @@ export default function (pi: ExtensionAPI): void {
     if (piNotice) {
       diag("meta", piNotice);
       ctx.ui?.notify?.(piNotice, "warning");
+    }
+
+    // ── Native-paste restoration (ADR 0030 amendment, 2026-10-13) ──
+    // `archimedes.imagePaste.suppressNativePaste: false` hands ctrl+v back to
+    // pi in two halves: this call deletes the suite's own
+    // `app.clipboard.pasteImage` unbinding from
+    // ~/.pi/agent/keybindings.json, and the gate inside `registerImagePaste`
+    // (above) stops image-paste registering a shortcut for the key — without it
+    // pi 1.2.0 keeps the extension shortcut and the restored binding never
+    // runs. Gated on ipMod: the registration gate is what ADR 0012 permits (a
+    // package never reads its own `enabled` flag), so a disabled image-paste
+    // never reaches into the file. Deliberately the LAST thing in this handler —
+    // a successful restore can call ctx.reload(), which invalidates this ctx, so
+    // nothing may use it afterwards.
+    if (ipMod) {
+      try {
+        await runNativePasteRestore(ctx);
+      } catch (e) {
+        diag("meta", `[archimedes] native paste restore failed: ${describeError(e)}`);
+      }
     }
   });
 
