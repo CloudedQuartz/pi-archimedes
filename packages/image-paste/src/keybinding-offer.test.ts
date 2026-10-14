@@ -1651,3 +1651,181 @@ describe("runNativePasteRestore — the refuse warning says what this file actua
     }
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// PR #129 review — the remaining clauses, checked against pi's own loader
+// ══════════════════════════════════════════════════════════════════════════
+//
+// The #127 fix split one sentence into four and checked each clause against the
+// shapes the split names. Three claims survived that are not facts about the
+// file in front of us, and one promise turned out to be untested. Every claim
+// below was measured against pi's OWN loader — `KeybindingsManager.create()`
+// from `dist/core/keybindings.js`, run against these exact files on pi 1.2.0 and
+// pi 0.87.0, which carry the same code — not reasoned about from our side:
+//
+//   * **The old name still bites.** pi renames `pasteImage` to
+//     `app.clipboard.pasteImage` before it applies anything
+//     (`KEYBINDING_NAME_MIGRATIONS`, `dist/core/keybindings.js:225`, applied by
+//     `migrateKeybindingsConfig` at `:254-269`), so
+//     `{ "pasteImage": [] }` resolves the paste action to `[]`: the key is
+//     DEAD. Our reader only looks for the modern key, so it filed that file
+//     under "nothing in it clears pi's paste binding — pi's own paste answers
+//     that key", which is the exact opposite of what pi does with it.
+//     pi's startup migration (`migrations.js:139-157`) rewrites the file on
+//     disk before extensions load, so this is the narrow case where it did not:
+//     a read-only agent dir (its `catch {}` swallows the failure), or a file
+//     replaced by a dotfiles sync / editor after the migration and then
+//     `/reload`ed — `keybindings.reload()` (`interactive-mode.js:5406`) only
+//     re-reads, it never migrates the file.
+//   * **We cannot see who wrote the file.** `{ "$schema": <pi's URL> }` is
+//     byte-for-byte the line `offerKeybindingFix` writes, and it is the state a
+//     user is in after following our own "remove the entry" instruction on that
+//     file, so "nothing in this file was written by this suite" is not something
+//     the refusal is allowed to assert.
+//   * **An unreadable file does not leave the binding unknown.** pi DISCARDS the
+//     whole file when it cannot read or parse it (`loadRawConfig` returns
+//     `undefined` → `loadFromFile` returns `{}`, `keybindings.js:285-297`) and
+//     every action falls back to its default, silently, with no diagnostic on
+//     any path. So the paste key IS answered by pi's default and none of the
+//     user's own bindings in that file are in force — "we cannot tell what the
+//     paste key is bound to" tells the user to go read a file that pi is
+//     ignoring.
+
+describe("runNativePasteRestore — the refuse warning vs pi's own keybindings loader (PR #129 review)", () => {
+  beforeEach(clearNoticeGuard);
+
+  /** Refuse `raw` and return the one warning, with the shared refusal shape. */
+  async function warning(raw: string): Promise<string> {
+    // The notice guard is once-per-PROCESS, and one test below asks for two
+    // refusals in a row, so the helper re-arms it rather than relying on
+    // `beforeEach` alone.
+    clearNoticeGuard();
+    askForNativePaste();
+    writeKeybindings(raw);
+    const { ctx, notify } = makeCtx("tui");
+
+    const outcome = await runNativePasteRestore(ctx);
+
+    if (outcome.kind !== "untouched") {
+      return expect.fail(`expected "untouched", got "${outcome.kind}"`);
+    }
+    expect(notify).toHaveBeenCalledTimes(1);
+    const [message, level] = notify.mock.calls[0] as [string, string];
+    expect(level).toBe("warning");
+    expect(message).toContain(keybindingsPath());
+    expect(message).not.toContain("\n");
+    return message;
+  }
+
+  it("the OLD name pasteImage: [] is an unbinding too: pi's paste is dead, and the entry to name is the old one", async () => {
+    // Measured: pi resolves app.clipboard.pasteImage to [] for this file, so it
+    // belongs with the "there is an entry, remove it, the key is dead until you
+    // do" refusals — and naming the modern key would send the user looking for
+    // a line that is not in the file (issue #127 again, in the other direction).
+    const message = await warning(`{ "pasteImage": [] }`);
+
+    expect(message).toMatch(/"pasteImage"/);
+    expect(message).toMatch(/remove .*"pasteImage"/i);
+    expect(message).toMatch(/\/reload/);
+    expect(message).toMatch(/does nothing/i);
+    // The two claims this file refutes.
+    expect(message).not.toMatch(/pi's own paste answers that key/i);
+    expect(message).not.toMatch(/nothing for you to edit/i);
+    // Not told to delete an entry under a name the file does not contain.
+    expect(message).not.toMatch(/remove the "app\.clipboard\.pasteImage" entry/i);
+  });
+
+  it("a $schema carrying pi's own URL is not evidence the file is foreign: no claim about who wrote it", async () => {
+    // Still the no-errand refusal — pi keeps its default binding here.
+    const message = await warning(`{ "$schema": "${SCHEMA_URL}" }`);
+
+    expect(message).toMatch(/nothing for you to edit/i);
+    expect(message).toMatch(/pi's own paste answers that key/i);
+    expect(message).not.toMatch(/\/reload/);
+    expect(message).not.toMatch(/remove|delete/i);
+    // But the refusal must not assert authorship it cannot see: this exact line
+    // is what the first-run offer writes.
+    expect(message).not.toMatch(/was written by this suite/i);
+    expect(message).not.toMatch(/nothing in .* was written/i);
+  });
+
+  it("a file pi cannot read is a file pi ignores: the warning says pi falls back to its defaults", async () => {
+    for (const [label, raw] of [
+      ["unparsable", `{ "${UNBIND_KEY}": [] // hand-edited, not valid JSON`],
+      ["not-a-JSON-object", `["${UNBIND_KEY}"]`],
+    ] as const) {
+      const message = await warning(raw);
+
+      expect(message, label).not.toMatch(/cannot tell what the paste key is bound to/i);
+      expect(message, label).toMatch(/default/i);
+      // Still: the file is named, the cause is named, the reading is handed back.
+      expect(message, label).toMatch(/check .*yourself/i);
+      expect(message, label).not.toContain(UNBIND_KEY);
+      expect(message, label).not.toMatch(/remove|delete/i);
+    }
+
+    // The third shape cannot come from `warning()` (it writes a file), so it is
+    // set up by hand: a directory where keybindings.json should be.
+    clearNoticeGuard();
+    askForNativePaste();
+    // Clear whatever the loop above left at the path, then make it a directory.
+    fs.rmSync(keybindingsPath(), { recursive: true, force: true });
+    fs.mkdirSync(keybindingsPath(), { recursive: true });
+    const { ctx, notify } = makeCtx("tui");
+    try {
+      await runNativePasteRestore(ctx);
+      const [message] = notify.mock.calls[0] as [string, string];
+
+      expect(message).toMatch(/could not be read/i);
+      expect(message).toMatch(/default/i);
+      expect(message).not.toMatch(/cannot tell what the paste key is bound to/i);
+      expect(message).not.toContain(UNBIND_KEY);
+      expect(message).not.toMatch(/remove|delete/i);
+    } finally {
+      fs.rmSync(keybindingsPath(), { recursive: true, force: true });
+    }
+  });
+
+  it("a modern binding with a legacy [] behind it: clearing only the modern entry would re-dead the key", async () => {
+    // Measured: pi drops the legacy entry while the modern key exists
+    // (`keybindings.js:260-264`), so the old name is invisible today and takes
+    // the binding over the moment the modern entry is deleted — i.e. exactly
+    // after the user does what this warning tells them to do.
+    const message = await warning(`{ "${UNBIND_KEY}": ["ctrl+v"], "pasteImage": [] }`);
+
+    expect(message).toMatch(/your/i);
+    expect(message).toMatch(/pasteImage/);
+    expect(message).toMatch(/too\b/i);
+    // Their own binding answers the key right now, so the key is not dead.
+    expect(message).not.toMatch(/does nothing/i);
+  });
+
+  it("diag logs the SAME guidance the warning gave — the log line is not a second wording", async () => {
+    // Written against a surviving mutant: replacing `status.manualEdit` with the
+    // generic "remove the entry" guidance inside `describeRestoreStatus` passed
+    // all 163 tests, because the log assertions only demanded "path + key name"
+    // — both of which the OLD one-size sentence also contains. `manualEdit` is
+    // the single source for the status, the notify and the log, so the log is
+    // asserted against the refusal it belongs to.
+    askForNativePaste();
+    writeKeybindings(`{ "app.editor.newLine": ["ctrl+enter"] }`);
+    const logFile = join(tempDir, `diag-${process.pid}-single-source.log`);
+    process.env.PI_ARCHIMEDES_LOG = logFile;
+    let notified = "";
+    try {
+      const { ctx, notify } = makeCtx("tui");
+      const outcome = await runNativePasteRestore(ctx);
+      expect(outcome.kind).toBe("untouched");
+      notified = (notify.mock.calls[0] as [string])[0];
+    } finally {
+      delete process.env.PI_ARCHIMEDES_LOG;
+    }
+
+    const log = fs.readFileSync(logFile, "utf-8");
+    expect(log).toContain(keybindingsPath());
+    expect(log).toContain("pi's own paste answers that key");
+    expect(log).not.toMatch(/remove the .*entry/i);
+    expect(notified).toContain("pi's own paste answers that key");
+  });
+});
+

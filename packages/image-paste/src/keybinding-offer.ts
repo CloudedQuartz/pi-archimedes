@@ -322,9 +322,12 @@ export async function offerKeybindingFix(ctx: ExtensionContext): Promise<boolean
 /**
  * Why a file was left alone. The five are NOT the same five files, and the
  * warning no longer pretends otherwise (issue #127): `binding-not-empty` and an
- * `extra-key` file that also still carries our `[]` hold an entry the user can
- * delete, while foreign-keys-only / `$schema`-only files hold none, and the three
- * unreadable shapes cannot be inspected at all. `manualEdit` branches on this.
+ * `extra-key` file that also still carries an empty `app.clipboard.pasteImage`
+ * hold an entry the user can delete, while foreign-keys-only /
+ * `$schema`-only files hold none, and the three unreadable shapes cannot be
+ * inspected at all. `manualEdit` branches on this — and on
+ * {@link pasteEntryFacts}, because which entry (if any) is in there is a fact
+ * the reason alone does not carry.
  */
 export type UntouchedReason =
   /** Valid JSON that is not an object (an array, a string, a number…). */
@@ -395,7 +398,71 @@ function claimRestoreNotice(): boolean {
 }
 
 /**
- * The instruction for the one refusal that really does hold our unbinding: the
+ * pi's pre-rename name for the paste action — `KEYBINDING_NAME_MIGRATIONS.pasteImage`
+ * (`dist/core/keybindings.js:225` in pi 1.2.0, and the same entry in 0.87.0),
+ * applied by `migrateKeybindingsConfig` (`:254-269`) before the bindings are
+ * built. So `"pasteImage": []` unbinds `app.clipboard.pasteImage` exactly as the
+ * current spelling does; measured on both versions, pi resolves the action to
+ * `[]` for that file.
+ *
+ * We still never rewrite such a file — the accept-set is only what this suite
+ * has actually written, which is the modern name — but a refusal that calls that
+ * file one "pi's own paste answers" is describing the opposite of what pi does
+ * with it. pi's startup migration rewrites legacy names on disk
+ * (`migrations.js:139-157`) before extensions load, and its own `catch {}` means
+ * a read-only agent dir leaves the legacy file in place; `keybindings.reload()`
+ * on `/reload` (`dist/modes/interactive/interactive-mode.js:5406`) re-reads
+ * without migrating, so a file replaced by a dotfiles sync mid-session reaches
+ * us un-migrated either way.
+ */
+const LEGACY_UNBIND_KEY = "pasteImage";
+
+/** Which entry of a file we read keeps pi's paste action switched off. */
+type PasteBlocker =
+  /** Nothing in the file unbinds the action, under either name. */
+  | "none"
+  /** `[]` under the name this suite writes. */
+  | "current"
+  /** `[]` under pi's pre-rename name (`{@link LEGACY_UNBIND_KEY}`). */
+  | "legacy";
+
+/**
+ * What a readable file does to the paste key, as one value, so the guidance and
+ * the reason cannot be derived from different facts.
+ */
+interface PasteEntryFacts {
+  blocker: PasteBlocker;
+  /**
+   * `[]` under the old name, sitting behind a modern entry that pi prefers: the
+   * migrator drops the legacy entry while the modern key exists
+   * (`keybindings.js:260-264`), so the old name is invisible today and takes the
+   * binding back the moment the modern entry is deleted — i.e. right after the
+   * user does what the warning tells them to do.
+   */
+  legacyBehindModern: boolean;
+}
+
+/** The facts for a file we never got far enough with to inspect. */
+const UNSEEN_FILE_FACTS: PasteEntryFacts = { blocker: "none", legacyBehindModern: false };
+
+function isEmptyBinding(value: unknown): boolean {
+  return Array.isArray(value) && value.length === 0;
+}
+
+/** The facts {@link guidanceLine} needs, read off the parsed object. */
+function pasteEntryFacts(obj: Record<string, unknown>): PasteEntryFacts {
+  const current = isEmptyBinding(obj[UNBIND_KEY]);
+  const legacy = isEmptyBinding(obj[LEGACY_UNBIND_KEY]);
+  return {
+    // The modern name wins when both are present, because pi drops the legacy
+    // entry in that case — so it decides which entry is the blocker.
+    blocker: current ? "current" : legacy ? "legacy" : "none",
+    legacyBehindModern: !current && legacy && UNBIND_KEY in obj,
+  };
+}
+
+/**
+ * The instruction for the one refusal that really does hold OUR unbinding: the
  * entry is in there, removing it is the fix, and until it goes nothing answers
  * the key (the file empties it and `suppressNativePaste: false` took our
  * shortcut). Shared by the `extra-key`-with-unbinding refusal and by `failed`,
@@ -411,8 +478,26 @@ function removeOurEntryGuidance(path: string): string {
 }
 
 /**
+ * The same refusal for the same dead key, reached through pi's old name for the
+ * action: an entry IS there and removing it IS the fix, but it is spelled
+ * `pasteImage`, so naming the modern key would send the user looking for a line
+ * that is not in the file. It is not our artefact, so it is not named as ours
+ * and never rewritten — only described.
+ */
+function removeLegacyEntryGuidance(path: string): string {
+  return (
+    `To give the paste key back to pi, remove the "${LEGACY_UNBIND_KEY}" entry from ` +
+    `${path} and run /reload — that is the old name for "${UNBIND_KEY}", and pi ` +
+    "still reads it as an unbinding of the paste action. image-paste is not " +
+    "binding the paste key either (suppressNativePaste is off), so that key does " +
+    "nothing until you do."
+  );
+}
+
+/**
  * The guidance line for a file the extension must not touch, naming the path and
- * saying only what this file actually supports (issue #127).
+ * saying only what this file actually supports (issue #127, and the PR #129
+ * review of the first split).
  *
  * One warning used to cover every refusal, and it ordered the user to "remove the
  * `app.clipboard.pasteImage` entry" — true only when such an entry is in there.
@@ -422,33 +507,53 @@ function removeOurEntryGuidance(path: string): string {
  *
  * * `binding-not-empty` — an entry IS there, and removing it is still how the key
  *   gets back to pi, but it is the user's own binding, so it is named as theirs
- *   and the key is not called dead (their binding answers it).
- * * `extra-key` holding our `[]` (`hasUnbinding`) — the original wording, and the
- *   only case where "that key does nothing until you do" is also true.
- * * `extra-key` without it — nothing of ours to clean up, nothing to edit, and pi
- *   already answers the key, so no reload is asked for either.
- * * the three unreadable shapes — the file is named, the cause is named, and the
- *   reading is handed back to the user; no entry is named because none can be seen.
+ *   and the key is not called dead (their binding answers it). If pi's OLD name
+ *   sits behind it with `[]`, the sentence says to clear that one too: pi drops
+ *   the legacy entry only while the modern key exists, so deleting just the
+ *   modern one would hand the key straight back to the old unbinding.
+ * * `extra-key` holding our `[]` — the original wording, and the case where
+ *   "that key does nothing until you do" is true of a file we wrote.
+ * * `extra-key` holding `[]` under pi's old name — the same dead key and the same
+ *   fix, but the entry is named the way the file spells it.
+ * * `extra-key` with neither — nothing of ours to clean up, nothing to edit, and
+ *   pi answers the key on its own default binding, so no reload is asked for
+ *   either. No claim about who wrote the file: `$schema` with pi's published URL
+ *   is byte-for-byte what the offer writes, and it is also what a hand-written
+ *   file can carry, so authorship is not a fact the refusal can see.
+ * * the three unreadable shapes — the file is named and the cause is named, and
+ *   what happens next is stated rather than left unknown: pi throws away a file
+ *   it cannot use and every action keeps its default
+ *   (`loadRawConfig` → `undefined` → `{}` user bindings,
+ *   `dist/core/keybindings.js:285-297`), which means pi's own paste IS answering
+ *   the key and none of the file's other bindings are in force. Asking the user
+ *   to go read a file pi is ignoring would leave them looking in the wrong place.
  *
- * `hasUnbinding` is the one fact the reason alone cannot carry: `extra-key` covers
- * both "foreign keys beside our `[]`" and "foreign keys, no unbinding at all",
- * which need opposite instructions. The other reasons ignore it.
+ * {@link pasteEntryFacts} is the one value carrying what the reason alone cannot:
+ * `extra-key` covers "an unbinding beside a foreign key" and "no unbinding at
+ * all", which need opposite instructions, and it does not say which spelling of
+ * the action the file uses. The unreadable shapes get {@link UNSEEN_FILE_FACTS}.
  */
-function guidanceLine(path: string, reason: UntouchedReason, hasUnbinding: boolean): string {
+function guidanceLine(path: string, reason: UntouchedReason, facts: PasteEntryFacts): string {
   switch (reason) {
     case "binding-not-empty":
       return (
         `The "${UNBIND_KEY}" binding in ${path} is yours, not something this suite ` +
         "wrote, so it is yours to hand back: remove that entry and run /reload. " +
-        "image-paste is not binding the paste key either (suppressNativePaste is off)."
+        "image-paste is not binding the paste key either (suppressNativePaste is off)." +
+        (facts.legacyBehindModern
+          ? ` The file also carries the old name "${LEGACY_UNBIND_KEY}", which pi reads ` +
+            "as the same action, so clear that entry too — once the entry above is gone " +
+            "it is the one keeping the paste key unbound."
+          : "")
       );
     case "extra-key":
-      if (hasUnbinding) return removeOurEntryGuidance(path);
+      if (facts.blocker === "current") return removeOurEntryGuidance(path);
+      if (facts.blocker === "legacy") return removeLegacyEntryGuidance(path);
       return (
-        `Nothing in ${path} was written by this suite and nothing in it clears ` +
-        "pi's paste binding, so there is nothing of ours to clean up and nothing " +
-        "for you to edit — pi's own paste answers that key. image-paste registers " +
-        "no paste shortcut of its own while suppressNativePaste is off."
+        `Nothing in ${path} is ours to clean up and nothing in it clears pi's ` +
+        "paste binding, so there is nothing for you to edit — pi's own paste " +
+        "answers that key on its default binding. image-paste registers no paste " +
+        "shortcut of its own while suppressNativePaste is off."
       );
     case "unreadable":
     case "unparsable":
@@ -460,28 +565,29 @@ function guidanceLine(path: string, reason: UntouchedReason, hasUnbinding: boole
             ? "it does not parse as JSON"
             : "it is not a JSON object";
       return (
-        `The file is left exactly as it is; ${cause}, so we cannot tell what the ` +
-        `paste key is bound to — please check ${path} yourself, and run /reload if ` +
-        "you change it. image-paste registers no paste shortcut of its own while " +
-        "suppressNativePaste is off."
+        `The file is left exactly as it is; ${cause}, and pi treats a file it ` +
+        "cannot use as if it held no bindings at all — every action keeps its " +
+        "default, so pi's own paste is answering the key and nothing else in that " +
+        `file is in force. Please check ${path} yourself, and run /reload once it ` +
+        "is readable again. image-paste registers no paste shortcut of its own " +
+        "while suppressNativePaste is off."
       );
     }
   }
 }
 
-/** The guidance for a file we read, derived from the same facts the reason is. */
+/** The guidance for a file we read, from the same read that gives the reason. */
 function guidanceForReadFile(
   path: string,
   obj: Record<string, unknown>,
   reason: UntouchedReason,
 ): string {
-  const binding = obj[UNBIND_KEY];
-  return guidanceLine(path, reason, Array.isArray(binding) && binding.length === 0);
+  return guidanceLine(path, reason, pasteEntryFacts(obj));
 }
 
 /** The guidance for a file we never got far enough with to inspect. */
 function guidanceForUnreadableFile(path: string, reason: UntouchedReason): string {
-  return guidanceLine(path, reason, false);
+  return guidanceLine(path, reason, UNSEEN_FILE_FACTS);
 }
 
 function agentKeybindingsPath(): string {
@@ -502,11 +608,13 @@ function agentKeybindingsPath(): string {
  * unable to give the key back without a hand edit. `$schema` counts as ours
  * only with pi's published URL, which keeps the set closed without widening it.
  * Nothing else is ever accepted: not a third key, not a different `$schema`,
- * not a non-empty binding.
+ * not a non-empty binding — and not pi's old name for the action either
+ * ({@link LEGACY_UNBIND_KEY}). A file holding `"pasteImage": []` clears the
+ * paste key just as effectively, but this suite never wrote that spelling, so it
+ * is refused (and explained) rather than rewritten.
  */
 function isSuiteOwnedUnbinding(obj: Record<string, unknown>): boolean {
-  const binding = obj[UNBIND_KEY];
-  if (!Array.isArray(binding) || binding.length !== 0) return false;
+  if (!isEmptyBinding(obj[UNBIND_KEY])) return false;
   const keys = Object.keys(obj);
   if (keys.length === 1) return true;
   return (
@@ -527,11 +635,12 @@ function isSuiteOwnedUnbinding(obj: Record<string, unknown>): boolean {
  *
  * * Only ever acts on the suite's own artefact, and the write only ever
  *   *removes* the key — the result is `{}`.
- * * Anything else — extra keys, a non-empty binding, a foreign `$schema`, a
- *   file that does not parse or cannot be read — is left byte-for-byte alone,
- *   and the returned `"untouched"` status carries the path plus the guidance
- *   that refusal warrants ({@link guidanceLine}) — the entry to remove only when
- *   an entry really is in there.
+ * * Anything else — extra keys, a non-empty binding, a foreign `$schema`, pi's
+ *   old name for the action, a file that does not parse or cannot be read — is
+ *   left byte-for-byte alone, and the returned `"untouched"` status carries the
+ *   path plus the guidance that refusal warrants ({@link guidanceLine}) — the
+ *   entry to remove only when an entry really is in there, spelled the way the
+ *   file spells it.
  * * Idempotent by content: `{}` is reported as `"already-restored"` **without a
  *   rewrite**, so the flag cannot touch a user file on every session start.
  * * Writes atomically through {@link writeAtomicPreservingSymlinks}, so a
@@ -585,12 +694,11 @@ export function restoreNativePaste(): RestoreNativePasteStatus {
   if (!isSuiteOwnedUnbinding(obj)) {
     // Root cause, for the log: the binding itself being someone else's beats
     // "there is a key we did not write" (a foreign `$schema` alongside a real
-    // `[]` unbinding is the extra key, not a live binding).
-    const binding = obj[UNBIND_KEY];
+    // `[]` unbinding is the extra key, not a live binding). The legacy spelling
+    // is an extra key by this test — pi renames it later, and `guidanceLine`
+    // says so to the user.
     const reason: UntouchedReason =
-      UNBIND_KEY in obj && !(Array.isArray(binding) && binding.length === 0)
-        ? "binding-not-empty"
-        : "extra-key";
+      UNBIND_KEY in obj && !isEmptyBinding(obj[UNBIND_KEY]) ? "binding-not-empty" : "extra-key";
     return {
       kind: "untouched",
       path,
@@ -680,18 +788,22 @@ export async function runNativePasteRestore(
   if (status.kind === "untouched" || status.kind === "failed") {
     // "We did not touch it" — one actionable warning naming the path, spent at
     // most once per process. What it asks of the user comes from the status
-    // itself (`manualEdit`, i.e. {@link guidanceLine}), because the five
-    // refusals are not the same five files: only a file that still holds an
-    // `app.clipboard.pasteImage` entry has anything to delete, and issue #127 is
-    // the warning that used to order all of them to go look for one.
+    // itself (`manualEdit`, i.e. {@link guidanceLine}), because the refusals are
+    // not the same files: only a file that still holds an unbinding of the paste
+    // action has anything to delete, and issue #127 is the warning that used to
+    // order all of them to go look for one.
     if (ctx.hasUI && claimRestoreNotice()) {
       const failure =
         status.kind === "failed" ? `The write failed (${status.error}). ` : "";
       // `manualEdit` carries the second half of the promise too — that with the
       // flag off image-paste registers NO paste shortcut — worded per refusal:
       // "that key does nothing until you do" only where the file really does
-      // leave the key unbound, "pi's own paste answers that key" where it does
-      // not, and "we cannot tell, check the file" where we cannot read it.
+      // leave the key unbound (our `[]`, or pi's old name for it), "pi's own
+      // paste answers that key" where it does not, and "pi is running on its
+      // defaults, check the file" where it cannot be read at all. `describeRestoreStatus`
+      // feeds the SAME `manualEdit` to `diag`, so the log and the warning cannot
+      // tell two stories about one file — asserted, not merely intended, by the
+      // `keybinding-offer.test.ts` case that names the mutant it guards.
       ctx.ui.notify(
         `image-paste did not change ${status.path}. ${failure}${status.manualEdit}`,
         "warning",

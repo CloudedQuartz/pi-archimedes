@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-10-14
-verified-by: "npx vitest run — packages/image-paste/src/keybinding-offer.test.ts (163 tests: gate matrix, return contract, auto-reload fallback + branch ordering, updateConfig concurrency, generated $schema, the offer text, the accept-set and its edges, and one refusal test per refuse reason for the untouched warning) + packages/image-paste/src/shortcut-gate.test.ts (9 tests: the paste shortcut is not registered while suppressNativePaste is false, per session) + meta/src/factory-lifecycle.test.ts (13 tests: merged first-run handler wiring + sequencing) + meta/src/readme-agreement.test.ts (5 tests: README.md and meta/README.md agree on what the suite writes to keybindings.json). Live capture 2026-10-14 against pi 1.2.0 in a scratch PI_CODING_AGENT_DIR."
+verified-by: "npx vitest run — packages/image-paste/src/keybinding-offer.test.ts (168 tests: gate matrix, return contract, auto-reload fallback + branch ordering, updateConfig concurrency, generated $schema, the offer text, the accept-set and its edges, one refusal test per refuse reason for the untouched warning, and one per claim the wording makes about the file) + packages/image-paste/src/shortcut-gate.test.ts (9 tests: the paste shortcut is not registered while suppressNativePaste is false, per session) + meta/src/factory-lifecycle.test.ts (13 tests: merged first-run handler wiring + sequencing) + meta/src/readme-agreement.test.ts (6 tests: README.md and meta/README.md agree on what the suite writes to keybindings.json, and no user-facing page carries a claim the code makes false). Live capture 2026-10-14 against pi 1.2.0 in a scratch PI_CODING_AGENT_DIR; the loader claims (legacy-name rename, whole-file discard) were checked against pi 1.2.0 and 0.87.0 dist/core/keybindings.js."
 ---
 
 # First-run keybinding offer
@@ -172,18 +172,37 @@ below) and does not give anyone their key back:
      because `suppressNativePaste: false` took our shortcut with it;
    * `app.clipboard.pasteImage` bound by the user → the same instruction, but
      named as **their** binding, and the key is not called dead (their binding
-     answers it);
+     answers it). If Pi's pre-rename name `pasteImage` sits behind it with `[]`,
+     the warning says to clear that entry too — Pi drops the legacy entry only
+     while the modern key exists (`keybindings.js:260-264`), so deleting one and
+     leaving the other re-deads the key;
+   * `[]` under Pi's old name `pasteImage`, and no modern key → the same dead key
+     and the same fix, but the entry is named the way the file spells it — naming
+     `app.clipboard.pasteImage` here would send the user looking for a line that
+     is not in the file. Pi renames it on the way in
+     (`KEYBINDING_NAME_MIGRATIONS`, `keybindings.js:225`), which is why the old
+     spelling clears the action at all; we never wrote it, so it is refused and
+     explained, never rewritten;
    * foreign keys only, or `$schema` only → nothing of ours to clean up and
      nothing for the user to edit: Pi's own paste already answers the key on its
-     default binding, so no reload is asked for;
-   * unreadable, unparsable, not a JSON object → the file is named, the cause is
-     named, and the reading is handed back to the user ("check the file, run
-     `/reload` if you change it") — no entry is named, because none can be seen.
+     default binding, so no reload is asked for. No claim is made about who wrote
+     the file — `$schema` with Pi's published URL is byte-for-byte what the offer
+     writes, and a hand-written file can carry the same line;
+   * unreadable, unparsable, not a JSON object → the file is named and the cause
+     is named, and what Pi does next is named too: it discards a file it cannot
+     use and every action keeps its default (`loadRawConfig` → `{}`,
+     `keybindings.js:285-297`), so Pi's paste is answering the key and none of
+     the user's other bindings in that file are in force. The user is asked to
+     check the file and run `/reload` once it is readable again — no entry is
+     named, because none can be seen.
 
    Every variant names the file path, and `diag` carries the reason on every
-   outcome. Each is pinned by name in `keybinding-offer.test.ts` ("the refuse
-   warning says what this file actually holds"), so re-merging them into one
-   string is a test failure rather than a silent regression.
+   outcome — the same `manualEdit` string the warning shows, so the log and the
+   warning cannot tell two stories about one file (asserted, not merely
+   intended). Each is pinned by name in `keybinding-offer.test.ts` ("the refuse
+   warning says what this file actually holds" and "the refuse warning vs pi's
+   own keybindings loader"), so re-merging them into one string is a test failure
+   rather than a silent regression.
    Idempotent by content: a file that already reads `{}` is reported without a
    rewrite.
 2. **The key.** `registerImagePaste` reads the same setting
