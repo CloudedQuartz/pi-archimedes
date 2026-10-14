@@ -1,7 +1,7 @@
 ---
 status: live
-last-verified: 2026-09-15
-verified-by: "npx vitest run — packages/image-paste/src/keybinding-offer.test.ts (109 tests: gate matrix, return contract, auto-reload fallback + branch ordering, updateConfig concurrency) + meta/src/factory-lifecycle.test.ts (merged first-run handler wiring + sequencing)"
+last-verified: 2026-10-14
+verified-by: "npx vitest run — packages/image-paste/src/keybinding-offer.test.ts (110 tests: gate matrix, return contract, auto-reload fallback + branch ordering, updateConfig concurrency, generated $schema) + meta/src/factory-lifecycle.test.ts (merged first-run handler wiring + sequencing)"
 ---
 
 # First-run keybinding offer
@@ -13,12 +13,26 @@ composition), if `~/.pi/agent/keybindings.json` is absent, the suite offers
 once to create it with the docs snippet:
 
 ```json
-{ "app.clipboard.pasteImage": [] }
+{ "$schema": "https://pi.dev/schemas/keybindings.schema.json", "app.clipboard.pasteImage": [] }
 ```
 
 This clears Pi's built-in `app.clipboard.pasteImage` binding (Ctrl+V on
 Linux/macOS, Alt+V on Windows) so it does not double-fire with image-paste's
 own Ctrl+V handler. The user must accept; the file is never created silently.
+
+The `$schema` key is the second half of the artefact and it changes nothing at
+runtime: Pi's loader skips it (`if (key === "$schema") continue;`,
+`dist/core/keybindings.js:247-248`), and Pi validates *theme* JSON at startup,
+not keybindings (`KeybindingsSchema` at `dist/core/keybindings-schema.js:13`
+has no startup validator). It is for editors and standalone validators — the
+file it points at declares `$schema` as a string and accepts the unbinding, and
+the generated snippet is checked against that published schema.
+
+> **Note for the restoration work (ADR 0030 Amendment 2026-10-13).** The
+> artefact this offer writes now has two keys, so "is this the file the suite
+> created?" has to be decided against `$schema` + `app.clipboard.pasteImage: []`
+> deliberately, not by accident — see `docs/roadmap/pi-1-x-alignment.md`
+> Task 12 item 2b.
 
 ## Gates (evaluated in order)
 

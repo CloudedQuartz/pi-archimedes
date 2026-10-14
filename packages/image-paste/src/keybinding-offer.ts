@@ -15,8 +15,22 @@ const CONFIRM_MESSAGE =
   "double-fires with image-paste's Ctrl+V handler. Create the file now with the " +
   "docs snippet? It clears the built-in binding (/reload applies it).";
 
-/** Exactly the snippet from packages/image-paste/README.md → "Paste shortcuts". */
-const SNIPPET_JSON = '{ "app.clipboard.pasteImage": [] }';
+/**
+ * Exactly the snippet from packages/image-paste/README.md → "Paste shortcuts".
+ *
+ * `$schema` points at pi's published keybindings schema. Read it as
+ * forward-compatibility and editor tooling, not as validation: pi 1.2.0 ships
+ * `KeybindingsSchema` (`dist/core/keybindings-schema.js:13`) with nothing in the
+ * shipped `dist` importing it, and what it validates at startup is *theme* JSON
+ * (`setThemeJsonValidator`, `dist/main.js:452`). What matters for us is that the
+ * loader ignores the key — `toKeybindingsConfig` does
+ * `if (key === "$schema") continue;` (`dist/core/keybindings.js:247-248`) — so
+ * the unbinding still applies, and the schema itself declares
+ * `"$schema": { "type": "string" }` (verified against the live
+ * https://pi.dev/schemas/keybindings.schema.json, whose `$id` is that URL).
+ */
+const SNIPPET_JSON =
+  '{ "$schema": "https://pi.dev/schemas/keybindings.schema.json", "app.clipboard.pasteImage": [] }';
 
 export const CREATED_NOTIFY = "Created ~/.pi/agent/keybindings.json — reloading now";
 /** Fallback wording for runtimes whose event ctx has no reload (Pi 0.85.1). */

@@ -4,7 +4,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import type { KeyId } from "@earendil-works/pi-tui";
 
-import { readClipboardImage } from "./clipboard.js";
+import {
+  buildPathInsertion,
+  clipboardTextForEditor,
+  readClipboardFilePaths,
+  readClipboardImage,
+  readClipboardText,
+} from "./clipboard.js";
 import { registerImagePreview, sendPreviewMessage } from "./preview.js";
 import type { ClipboardImage, PendingImage, ImageMarker } from "./types.js";
 
@@ -12,13 +18,13 @@ const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024; // 20MB
 
 // ── Queue management ────────────────────────────────────────────
 
-interface ImageQueue {
+export interface ImageQueue {
   images: PendingImage[];
   markers: ImageMarker[];
   nextIndex: number;
 }
 
-function createImageQueue(): ImageQueue {
+export function createImageQueue(): ImageQueue {
   return { images: [], markers: [], nextIndex: 1 };
 }
 
@@ -56,6 +62,98 @@ function queueImage(
   return marker;
 }
 
+// ── The paste dispatch ──────────────────────────────────────────────────────
+
+/**
+ * One `ctrl+v`, one outcome, in this order: **image → file paths → text**.
+ *
+ * The order is deliberately NOT pi's. pi's native `handleClipboardPaste` asks
+ * for paths first, then an image, then text
+ * (`dist/modes/interactive/interactive-mode.js:2497-2531`). We took this key off
+ * pi precisely in order to attach images, so an image has to win here —
+ * otherwise copying a screenshot on macOS (whose pasteboard carries both the
+ * file URL and the image bytes) would keep inserting a path and the one thing
+ * this package adds would never fire. Do not "fix" this to match pi: ADR 0030
+ * keeps the binding on the condition that this handler is a *superset* of pi's
+ * action, and the superset is this branch order plus pi's other two branches.
+ *
+ * Beyond the order, each branch matches pi's behaviour: the path branch reuses
+ * pi's own spacing rule (`buildPathInsertion`), the text branch reads the
+ * clipboard the way pi does (`readClipboardText`), and an empty clipboard is
+ * silent — pi has no `else` at `:2526-2530`, so neither do we. The genuinely
+ * additive branch is the first one: attach, queue, preview.
+ */
+export async function dispatchClipboardPaste(
+  ctx: ExtensionContext,
+  queue: ImageQueue,
+): Promise<void> {
+  try {
+    // 1. Image bytes. A reader that cannot run at all is not the same as an
+    //    empty clipboard, so the failure is kept aside: pi's dispatcher would
+    //    have aborted here (its catch, `:2532-2534`), but on our key the paths
+    //    and text branches are independent of the image reader, so they get
+    //    their turn and the failure is only reported if nothing else answered.
+    let imageReaderError: unknown = null;
+    let image: ClipboardImage | null = null;
+    try {
+      image = await readClipboardImage();
+    } catch (error) {
+      imageReaderError = error;
+    }
+
+    if (image) {
+      if (image.bytes.length > MAX_FILE_SIZE_BYTES) {
+        ctx.ui.notify(
+          `Image too large (${(image.bytes.length / 1024 / 1024).toFixed(1)}MB > 20MB).`,
+          "warning",
+        );
+        return;
+      }
+      queueImage(queue, image, ctx);
+      ctx.ui.notify("Image attached from clipboard.", "info");
+      return;
+    }
+
+    // 2. Copied files. pi inserts the paths rather than attaching them, and so
+    //    do we: a file copied in a file manager is a *path* on the clipboard,
+    //    not image bytes, so a copied PNG is inserted as text and never read
+    //    off disk. Exactly one branch runs per keypress, which is what keeps a
+    //    path from ever attaching as well — nothing double-attaches.
+    const filePaths = await readClipboardFilePaths();
+    if (filePaths) {
+      // pi's guard before inserting (`:2501-2503`).
+      if (filePaths.some((filePath) => /\p{Cc}/u.test(filePath))) {
+        throw new Error("Clipboard file path contains control characters");
+      }
+      // getEditorText is declared in 1.2.0 (types.d.ts:137); the peer floor is
+      // 0.86.0, which this checkout cannot inspect, so the read is guarded and
+      // degrades to pi's empty-draft case (no padding) instead of throwing.
+      const editorText = ctx.ui.getEditorText?.() ?? "";
+      ctx.ui.pasteToEditor(buildPathInsertion(filePaths, editorText));
+      return;
+    }
+
+    // 3. Plain text, prepared for the bracketed-paste route `pasteToEditor`
+    //    takes (see `clipboardTextForEditor`: an escape byte from the clipboard
+    //    would otherwise end the paste and lose the rest of it).
+    const text = await readClipboardText();
+    if (text) {
+      ctx.ui.pasteToEditor(clipboardTextForEditor(text));
+      return;
+    }
+
+    // 4. Nothing to paste.
+    if (imageReaderError) {
+      throw imageReaderError instanceof Error
+        ? imageReaderError
+        : new Error(String(imageReaderError));
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    ctx.ui.notify(`Clipboard paste failed: ${msg}`, "warning");
+  }
+}
+
 // ── Registration ────────────────────────────────────────────────
 
 function getImagePasteShortcuts(): KeyId[] {
@@ -75,28 +173,17 @@ export function registerImagePaste(pi: ExtensionAPI): void {
   registerImagePreview(pi);
 
   // Register shortcuts (once)
-  const pasteImage = async (): Promise<void> => {
-    if (_pasting) return; // Mutex: prevent concurrent paste operations
-    if (!_ctx || !_queue || !_ctx.hasUI) return;
+  const pasteFromClipboard = async (ctx: ExtensionContext): Promise<void> => {
+    // Mutex: prevent concurrent paste operations. It is only ever held for as
+    // long as one keypress is willing to wait — every read it awaits is
+    // bounded (a `spawnSync` timeout per CLI candidate,
+    // `NATIVE_READ_TIMEOUT_MS` per native read) — because an unbounded read
+    // here would hold the mutex forever and take the key out of service.
+    if (_pasting) return;
+    if (!_queue || !ctx.hasUI) return;
     _pasting = true;
     try {
-      const image = await readClipboardImage();
-      if (!image) {
-        _ctx.ui.notify("No image found in clipboard.", "warning");
-        return;
-      }
-      if (image.bytes.length > MAX_FILE_SIZE_BYTES) {
-        _ctx.ui.notify(
-          `Image too large (${(image.bytes.length / 1024 / 1024).toFixed(1)}MB > 20MB).`,
-          "warning",
-        );
-        return;
-      }
-      queueImage(_queue, image, _ctx);
-      _ctx.ui.notify("Image attached from clipboard.", "info");
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "Unknown error";
-      _ctx.ui.notify(`Image paste failed: ${msg}`, "warning");
+      await dispatchClipboardPaste(ctx, _queue);
     } finally {
       _pasting = false;
     }
@@ -104,8 +191,8 @@ export function registerImagePaste(pi: ExtensionAPI): void {
 
   for (const shortcut of getImagePasteShortcuts()) {
     pi.registerShortcut(shortcut, {
-      description: "Attach clipboard image to draft",
-      handler: pasteImage,
+      description: "Paste clipboard image, file paths, or text",
+      handler: pasteFromClipboard,
     });
   }
 
