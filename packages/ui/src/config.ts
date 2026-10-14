@@ -86,6 +86,12 @@ export interface UIConfig {
   codeUnindent: boolean;
   labelText: string;
   labelColor: string;
+  /**
+   * Opt in to the Archimedes startup splash (logo reveal + `[Version]`/`[Models]`
+   * rows). Default **off**: pi owns the startup screen unless the user asks.
+   * See the truth table in `index.ts` for how this and `quietStartup` interact.
+   */
+  startupSplash: boolean;
   animationStyle: AnimationStyle;
   colorfulLogo: boolean;
   editorSpinBorder: boolean;
@@ -106,6 +112,9 @@ export const DEFAULT_UI_CONFIG: UIConfig = {
   codeUnindent: true,
   labelText: "Thinking...",
   labelColor: "255,215,0",
+  // Off by default: the splash stays in the codebase, pi's own startup is what
+  // a user sees unless they turn it on (`/archimedes` → Startup Splash).
+  startupSplash: false,
   animationStyle: "vertical-up",
   colorfulLogo: false,
   editorSpinBorder: true,
@@ -126,6 +135,15 @@ export function loadUIConfig(): UIConfig {
   return loadConfig(NAMESPACE, DEFAULT_UI_CONFIG);
 }
 
+/**
+ * Write the whole `archimedes.ui` namespace (core's `saveConfig` replaces the
+ * section, it does not merge into it), so every key the caller holds lands —
+ * including any this package has not heard of. A new field therefore needs no
+ * handling here: it arrives on the `UIConfig` the `/archimedes` panel hands
+ * back, and `loadUIConfig()` reads it back merged over `DEFAULT_UI_CONFIG` (an
+ * absent key means the default, which is how `startupSplash: false` works for a
+ * settings file written before the key existed).
+ */
 export function saveUIConfig(config: UIConfig): void {
   saveConfig(NAMESPACE, config);
 }
@@ -146,6 +164,10 @@ export function saveUIConfig(config: UIConfig): void {
  * rendering and is not exposed to extensions, so on such a run the splash is
  * quieter than pi's output. Taking the `pi` handle (not `ctx`) is required —
  * `getSettings()` lives on `ExtensionAPI`.
+ *
+ * Only consulted when `startupSplash` is on (see the gate in `index.ts`): with
+ * the splash off this package installs no header at all and has no use for the
+ * answer.
  */
 export function readQuietStartup(pi: unknown): boolean | "header" {
   const value = (readEffectiveSettings(pi) as { quietStartup?: unknown }).quietStartup;

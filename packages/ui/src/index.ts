@@ -181,15 +181,58 @@ export function registerUI(pi: ExtensionAPI): void {
     if (ctx.hasUI) {
       spinFlag = config.editorSpinBorder;
 
-      // pi 1.x owns the startup screen. `quietStartup` says how much of it is
-      // shown — `false` header + details, `"header"` the header alone, `true`
-      // nothing — and `ctx.scopedModels` is the model scope pi would otherwise
-      // have printed, so nothing here scrapes pi's stdout or its component tree
-      // any more (that was `startup/capture.ts` plus the `addChild`
-      // interception in `patchStartupListing`, both removed here).
-      const quietStartup = readQuietStartup(pi);
+      // pi 1.x owns the startup screen, and the suite's splash is opt-in
+      // (`archimedes.ui.startupSplash`, default off — the maintainer's call: keep
+      // the code, flip the default). `ctx.scopedModels` is the model scope pi
+      // would otherwise have printed, so nothing here scrapes pi's stdout or its
+      // component tree any more (that was `startup/capture.ts` plus the
+      // `addChild` interception in `patchStartupListing`, both removed here).
+      //
+      // The two settings are independent knobs, so their combination is stated
+      // in full. `quietStartup` is pi's own (`false` = header + details,
+      // `"header"` = header alone, `true` = nothing);
+      // `startupSplash` is ours (off = we never install a header).
+      //
+      //   startupSplash   quietStartup   what the header slot gets      timers
+      //   -------------   ------------   ----------------------------   ------
+      //   false (default) false          pi's own header                none
+      //   false (default) "header"       pi's own header                none
+      //   false (default) true           pi's own (empty) header        none
+      //   true            false          our splash (+ `[Models]` if    armed
+      //                                   any model is scoped)
+      //   true            "header"       our splash, no scope           armed
+      //   true            true           pi's own (empty) header        none
+      //
+      // Off wins outright: with the splash off we hand the header back to pi
+      // whatever `quietStartup` says, and pi's own setting then decides what pi
+      // draws — its header and resource listing, its header alone, or its empty
+      // `Text("", 0, 0)` — exactly as it does with no archimedes loaded. Handing
+      // it back through `setHeader(undefined)` rather than simply doing nothing
+      // is what makes a splash left installed by an earlier session in the same
+      // process (`/reload` after turning it off) give way: pi puts its
+      // `builtInHeader` back in the slot (`setExtensionHeader()`,
+      // interactive-mode.js:2006-2011).
+      //
+      // On means today's behaviour, unchanged. `startupSplash: true` with
+      // `quietStartup: true` is the one row worth naming: pi asked for no header
+      // at all, so the splash stands down and pi's silence stands — opting in to
+      // the splash is not an instruction to overrule pi's own quiet startup, and
+      // `quietStartup` keeps deciding whether the resource listing (and so our
+      // `[Models]` row) shows. Pinned cell by cell in
+      // `startup-splash-gate.test.ts`.
+      //
+      // `startupSplash` is ours, and read strictly: anything that is not the
+      // literal `true` — a hand-edited `"true"`, a `1` — means off, the same way
+      // core's `isConfigEnabled` refuses to guess at a boolean.
+      const startupSplash = config.startupSplash === true;
+      // pi's own answer, asked only when the splash is on: with it off we install
+      // no header, so there is nothing for `quietStartup` to decide.
+      const quietStartup = startupSplash ? readQuietStartup(pi) : undefined;
 
-      if (quietStartup === true) {
+      if (!startupSplash) {
+        ctx.ui.setHeader(undefined);
+        uiRef = undefined;
+      } else if (quietStartup === true) {
         // pi's own header is an empty component in this mode. Handing ours back
         // is what keeps that silence: a splash left installed from an earlier
         // session in the same process (`/reload` after a settings change) would
