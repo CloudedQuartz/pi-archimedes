@@ -139,6 +139,8 @@ export function registerUI(pi: ExtensionAPI): void {
   pi.on("session_shutdown", (_event, ctx) => {
     const targetCtx = ctx?.hasUI ? ctx : uiCtx;
     if (targetCtx?.hasUI) {
+      // Give the working row back whichever way we left it: a session that
+      // started with the border spinner on had hidden it (`setWorkingVisible(false)`).
       targetCtx.ui.setWorkingVisible(true);
       // Give back everything the session borrowed: pi's animated indicator and
       // its own hidden-thinking wording, so a session that starts after this
@@ -256,13 +258,30 @@ export function registerUI(pi: ExtensionAPI): void {
       }
 
       clearSpinInterval();
-      // pi's working row carries an animated indicator by default. When the
-      // border spinner is on, that animation would run twice, so the row is
-      // asked for no frames — it keeps showing what the agent is doing, in
-      // pi's own words, while the border carries the movement. Hiding the row
-      // wholesale (the old `setWorkingVisible(false)`) also took that message
-      // away, and on a `ctrl-o` screen it took the only sign of life.
-      ctx.ui.setWorkingIndicator(spinFlag ? { frames: [] } : undefined);
+      // One announcement, in one place. pi's working row writes "Working" above
+      // the editor and our border spinner writes its label — `editorSpinLabel`
+      // defaults to "Working" as well — into the editor's own top border, so with
+      // both on screen the word appeared twice. The border is ours, so the row is
+      // handed pi's own switch: hidden while the spinner runs, given back when it
+      // does not.
+      //
+      // `setWorkingVisible()` is official API (`types.d.ts:88`), and hiding the
+      // row is what makes the indicator configuration `#106` needed redundant:
+      // pi's `setWorkingVisible(false)` clears the working status indicator
+      // outright and its `turn_start` handler honours the flag
+      // (`interactive-mode.js:1819-1828`, `:2762-2769`), so there is no row left
+      // for a `frames: []` to silence. The indicator is still handed back to pi
+      // unconditionally, so the row a user *does* see is pi's default down to its
+      // spinner.
+      //
+      // Read per session rather than remembered: `editorSpinBorder` can change
+      // between sessions, and pi puts the row back on whenever it replaces the
+      // session (`resetExtensionUI()` → `workingVisible = true`, `:1921`). The
+      // toggle needs no keying on the `pi` handle the way a registration does —
+      // it is one idempotent setter call inside the `session_start` handler, and
+      // every handle gets its own handler.
+      ctx.ui.setWorkingVisible(!spinFlag);
+      ctx.ui.setWorkingIndicator(undefined);
 
       // The word a collapsed thinking block shows is pi's own row, so the
       // setting is handed to pi rather than rebuilt here. An empty setting
