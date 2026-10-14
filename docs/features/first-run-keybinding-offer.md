@@ -165,7 +165,14 @@ below) and does not give anyone their key back:
    key, current `$schema` + unbinding pair). Anything else — extra key, foreign
    `$schema`, non-empty binding, unparsable or unreadable file — is left
    byte-for-byte alone and the user gets one warning naming the line to delete,
-   now also saying that the paste key is left unbound until they delete it.
+   now also saying that image-paste is not binding the paste key either. The
+   warning adds that the key "does nothing until you do", which holds only when
+   the refused file still carries the `[]` unbinding — a refused file that never
+   disabled `app.clipboard.pasteImage` (only `$schema`, only foreign keys, or
+   JSON that does not parse, which Pi's loader discards) leaves Pi's native paste
+   live on its default key, and a user told to delete an entry that is not there
+   is being sent on an errand. The string is pinned by `keybinding-offer.test.ts`,
+   so narrowing it is a behaviour change, tracked as a follow-up.
    Idempotent by content: a file that already reads `{}` is reported without a
    rewrite.
 2. **The key.** `registerImagePaste` reads the same setting
