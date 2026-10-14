@@ -32,8 +32,9 @@ TUI enhancements for the Pi Archimedes monorepo.
 - **Theme**: Unified styling for thinking blocks.
 
 ### Startup
-- **Splash Logo Reveal**: Engaging animations during initialization, with the running Pi version and the session's model scope (`ctx.scopedModels` — the set `/scoped-models` shows).
-- **Honours Pi's `quietStartup`**: `false` = splash with its details, `"header"` = splash alone, `true` = Pi's own quiet startup (the splash hands the header back). Nothing is scraped from Pi's output to decide this, and the splash makes no network request — Pi's own update check is the only one.
+- **The splash is opt-in, and off by default.** Out of the box you get **pi's own startup screen** — its header, its key hints, its loaded-resource listing. `startupSplash: true` installs the Archimedes splash in pi's header slot instead; with it off nothing is installed, so pi's `quietStartup` keeps working exactly as it does with no Archimedes loaded.
+- **Splash Logo Reveal** (`startupSplash: true`): An animated logo reveal with the running Pi version and the session's model scope (`ctx.scopedModels` — the set `/scoped-models` shows), drawn in pi's own row style so it reads as one document with the listing below it.
+- **Honours Pi's `quietStartup`** (when the splash is on): `false` = splash with its details, `"header"` = splash alone, `true` = Pi's own quiet startup (the splash hands the header back). With the splash off, that setting is pi's alone to act on. Nothing is scraped from Pi's output to decide any of this, and the splash makes no network request — Pi's own update check is the only one.
 
 ## Settings (`archimedes.ui`)
 
@@ -48,8 +49,9 @@ TUI enhancements for the Pi Archimedes monorepo.
 | `codeUnindent` | boolean | `true` | Strip common indentation from code blocks |
 | `labelText` | string | `"Thinking..."` | Text shown before thinking blocks |
 | `labelColor` | string | `"255,215,0"` | RGB color for the thinking label (e.g. `255,215,0`) |
-| `animationStyle` | "diagonal" \| "top-right" \| "bottom-left" \| "bottom-right" \| "center-out" \| "wave" \| "horizontal" \| "vertical" \| "vertical-up" | `"vertical-up"` | Startup logo animation |
-| `colorfulLogo` | boolean | `false` | Use pi's brand colors for the splash logo |
+| `startupSplash` | boolean | `false` | Install the Archimedes startup splash (off = pi's own startup screen) |
+| `animationStyle` | "diagonal" \| "top-right" \| "bottom-left" \| "bottom-right" \| "center-out" \| "wave" \| "horizontal" \| "vertical" \| "vertical-up" | `"vertical-up"` | Startup logo animation (applies when `startupSplash` is true) |
+| `colorfulLogo` | boolean | `false` | Use pi's brand colors for the splash logo (applies when `startupSplash` is true) |
 | `editorSpinBorder` | boolean | `true` | Animated spinner border on editor |
 | `editorSpinSpeed` | "slow" \| "normal" \| "fast" | `"normal"` | Editor border spinner speed |
 | `editorSpinStyle` | "typing" \| "pulse" \| "rain" \| "cascade" \| "columns" \| "wave-rows" \| "diagonal-swipe" \| "sparkle" \| "pendulum" \| "marquee" | `"pendulum"` | Editor spinner style |
