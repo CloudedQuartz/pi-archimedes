@@ -34,6 +34,25 @@ import {
   buildWrappedOptionLabelWithInlineNote,
 } from "./note.js";
 
+/**
+ * pi-tui exports the writer (`renderFakeCursor`) but not the class that resolves
+ * the markers, so the frame pass is only reachable through its dist file. A
+ * test-only import — nothing in this package's runtime touches it. Running pi-tui
+ * rather than re-typing its pattern is the point: the claim under test is what
+ * the frame does with the cell this package emits, and a copied regex would only
+ * prove the test agrees with itself.
+ */
+const { TuiBase } = (await import("@earendil-works/pi-tui/dist/tui.js")) as unknown as {
+  TuiBase: { prototype: { resolveFakeCursors(this: { showHardwareCursor: boolean }, lines: string[]): string[] } };
+};
+
+/** What pi-tui's own frame pass makes of a line, for each `showHardwareCursor` setting. */
+function resolve(line: string, showHardwareCursor: boolean): string {
+  return TuiBase.prototype.resolveFakeCursors.call({ showHardwareCursor }, [line])[0]!;
+}
+
+const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
 /** pi-tui's own markers, derived from the exported helper rather than re-typed. */
 const fakeCursorCell = renderFakeCursor("x");
 const FAKE_CURSOR_START = fakeCursorCell.slice(0, fakeCursorCell.indexOf("x"));
@@ -121,5 +140,52 @@ describe("truncation and wrapping with the fake cursor", () => {
     const joined = lines.join("\n");
     expect(joined.split(`${FAKE_CURSOR_START}`).length - 1).toBe(1);
     expect(joined).toContain(CURSOR_MARKER);
+  });
+});
+
+// The measurement the change rests on, executed rather than read: what pi-tui's
+// frame pass leaves behind for the cell this package emits.
+describe("caret through pi-tui's resolveFakeCursors", () => {
+  const INVERT_ON = "\x1b[7m";
+  const INVERT_OFF = "\x1b[27m";
+  const caret = buildOptionLabelWithInlineNote("Option", "ab", true, undefined, 1, true);
+
+  it("with no hardware cursor, the cell becomes reverse video", () => {
+    const resolved = resolve(caret, false);
+    expect(resolved).toContain(`${INVERT_ON}b${INVERT_OFF}`);
+    // The zero-width markers are gone, so they cannot leak into the frame.
+    expect(resolved).not.toContain(FAKE_CURSOR_START);
+    expect(resolved).not.toContain(FAKE_CURSOR_END);
+  });
+
+  it("with the hardware cursor on, the focused cell drops its block — exactly one cursor", () => {
+    const resolved = resolve(caret, true);
+    expect(occurrences(resolved, INVERT_ON)).toBe(0);
+    // The hardware marker itself survives: it is what positions the real cursor.
+    expect(resolved).toContain(CURSOR_MARKER);
+  });
+
+  it("the shape this package used to emit keeps two cursors when the hardware one is on", () => {
+    // The old caret, built the way `note.ts` built it before the fix: a raw
+    // reverse-video cell after CURSOR_MARKER. pi-tui cannot see it, so the drop
+    // above does not happen and the frame carries both.
+    const oldCaret = `Option${SEP}a${CURSOR_MARKER}${INVERT_ON}b${INVERT_OFF}`;
+    const resolved = resolve(oldCaret, true);
+    expect(resolved).toBe(oldCaret);
+    expect(occurrences(resolved, INVERT_ON)).toBe(1);
+  });
+
+  it("a caret with no hardware marker keeps its block in both settings (an unfocused fake cursor)", () => {
+    const noMarker = buildOptionLabelWithInlineNote("Option", "ab", true, undefined, 1, false);
+    for (const showHardwareCursor of [false, true]) {
+      const resolved = resolve(noMarker, showHardwareCursor);
+      expect(resolved).toContain(`${INVERT_ON}b${INVERT_OFF}`);
+    }
+  });
+
+  it("a plain option label is untouched by the pass", () => {
+    const plain = buildOptionLabelWithInlineNote("Option", "typed", false);
+    expect(resolve(plain, false)).toBe(plain);
+    expect(resolve(plain, true)).toBe(plain);
   });
 });
