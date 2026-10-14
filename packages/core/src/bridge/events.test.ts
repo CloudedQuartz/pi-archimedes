@@ -214,6 +214,88 @@ describe("subscription lifecycle", () => {
   it("stop() without start() is a no-op", () => {
     expect(() => stop()).not.toThrow();
   });
+
+  /**
+   * A Client reply that settles AFTER the relay restarted belongs to the dead
+   * subscription set, not the new one. `stop()` cancels the pending asks, and
+   * `channel.request().cancel()` settles synchronously — so the paired
+   * `.catch` lands on the very next microtask, by which time `start()` has
+   * already re-subscribed on the (possibly replacement) handle. Without a
+   * generation guard that stale `ASK_RESPONSE` is emitted into the NEW set.
+   *
+   * This is not a hypothetical restart: pi fires `session_start` twice per
+   * `new_session` in RPC mode (`runtimeHost.newSession()` rebinds through
+   * `setRebindSession`, then `rpc-mode.js` calls `rebindSession()` again), so a
+   * restart with an ask still pending is a real sequence, verified live against
+   * pi 1.2.0.
+   */
+  it("a reply that settles after the relay restarted does not reach the new subscription set", async () => {
+    const bus = fakeBus();
+    start(bus);
+    bus.emit(Events.ASK_REQUEST, { source: "subagent:x", requestId: "gen1-req", questions: [{ id: "q" }] });
+
+    // Restart while that Client request is still pending.
+    start(bus);
+    const crossed: unknown[] = [];
+    const unsub = bus.on(Events.ASK_RESPONSE, (p) => crossed.push(p));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(crossed).toEqual([]);
+    unsub();
+  });
+
+  /**
+   * The consequence the guard buys: an ask opened AFTER the restart keeps its
+   * own refcount. Without the guard the stale reply is indistinguishable from a
+   * real one to the fresh listener, and it unblocks a prompt still on screen.
+   */
+  it("a stale reply cannot unblock an ask opened after the restart", async () => {
+    const bus = fakeBus();
+    start(bus);
+    bus.emit(Events.ASK_REQUEST, { source: "subagent:x", requestId: "gen1-req", questions: [{ id: "q" }] });
+
+    start(bus); // restart with gen1-req pending
+    bus.emit(Events.ASK_REQUEST, { source: "subagent:x", requestId: "gen2-req", questions: [{ id: "q" }] });
+    expect(state()).toBe("blocked");
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // gen1-req's cancelled reply must not be counted against gen2-req.
+    expect(state()).toBe("blocked");
+    bus.emit(Events.ASK_RESPONSE, { requestId: "gen2-req", cancelled: false, results: [] });
+    expect(state()).toBe("working");
+  });
+
+  /**
+   * Three session generations, each with its own handle: exactly one live
+   * subscription per channel in the generation that opened it, and none after
+   * the last teardown. The leak this guards is a dropped unsubscribe — the host
+   * also drops a runtime's subscriptions on invalidation, but a module that
+   * still holds the old unsubscribers would be describing subscriptions that no
+   * longer exist, and a same-handle restart would double-deliver.
+   */
+  it("three generations subscribe once, deliver once, and leave nothing behind", () => {
+    const buses = [fakeBus(), fakeBus(), fakeBus()];
+    for (const bus of buses) {
+      // Twice, because pi really does fire `session_start` twice for one
+      // replacement in RPC mode (`setRebindSession` + rpc-mode's own rebind).
+      start(bus);
+      start(bus);
+      expect(bus.listenerCount(Events.COST_UPDATE)).toBe(1);
+      expect(bus.listenerCount(Events.ASK_REQUEST)).toBe(1);
+      expect(bus.listenerCount(Events.ASK_RESPONSE)).toBe(1);
+      expect(bus.listenerCount(Events.ASK_CANCEL)).toBe(1);
+      expect(bus.listenerCount(Events.TODOS_UPDATE)).toBe(1);
+      expect(bus.listenerCount(Events.TODOS_CLEAR)).toBe(1);
+      sent.length = 0;
+      bus.emit(Events.COST_UPDATE, COST);
+      expect(sent).toHaveLength(1);
+      stop();
+      for (const other of buses) expect(other.listenerCount(Events.COST_UPDATE)).toBe(0);
+    }
+  });
 });
 
 // ── 3. the real wiring: registerBridge's own handlers ───────────────────────

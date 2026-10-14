@@ -29,6 +29,12 @@ let refcount = 0;
 let settled = false;
 /** The handle the current subscription set was made on, or undefined when there is no subscription set. */
 let subscribedOn: EventBus | undefined;
+/**
+ * Bumped by every teardown. A Client reply that settles after its own
+ * subscription set is gone carries the generation it was asked on, and drops
+ * itself when that number is no longer current — see `requestAskToClient`.
+ */
+let generation = 0;
 let sessionCtx: ExtensionContext | undefined;
 
 const pending = new Map<string, { source: string; toolCallId?: string; cancel: () => void }>();
@@ -164,6 +170,10 @@ export function start(events: EventBus): void {
  * Safe to call when nothing is subscribed.
  */
 export function stop(): void {
+  // Retire in-flight replies BEFORE anything else: their callbacks run on the
+  // next microtask, which is after a same-tick `start()` has re-subscribed, so
+  // they need to be told they are stale rather than left to find the new set.
+  generation++;
   for (const unsubscribe of unsubscribers.splice(0)) unsubscribe();
   subscribedOn = undefined;
   // Cancel first, then drop: a cancelled Client request settles asynchronously
@@ -195,26 +205,33 @@ function requestAskToClient(
 ): { cancel: () => void } {
   const opts: { toolCallId?: string; source?: string } = { source: payload.source };
   if (payload.toolCallId !== undefined) opts.toolCallId = payload.toolCallId;
+  // The generation this ask belongs to. `stop()` cancels the request and bumps
+  // it, so the settle callback below (a microtask later) can tell whether it is
+  // still answering into the subscription set that asked — otherwise a reply to
+  // a dead session decrements the live session's refcount and reports a pending
+  // prompt as answered.
   const handle = request<{
     cancelled: boolean;
     results: Array<{ id: string; selectedOptions: string[]; customInput?: string }>;
   }>("ask", payload.questions, opts);
 
+  const askedAtGeneration = generation;
+  const answer = (response: { cancelled: boolean; results: unknown[] }): void => {
+    if (askedAtGeneration !== generation) return;
+    emitOn(subscribedOn, Events.ASK_RESPONSE, {
+      requestId: payload.requestId,
+      cancelled: response.cancelled,
+      results: response.results,
+    });
+  };
+
   handle.promise
     .then((resp) => {
-      emitOn(subscribedOn, Events.ASK_RESPONSE, {
-        requestId: payload.requestId,
-        cancelled: resp.cancelled,
-        results: resp.results,
-      });
+      answer({ cancelled: resp.cancelled, results: resp.results });
       pending.delete(payload.requestId);
     })
     .catch(() => {
-      emitOn(subscribedOn, Events.ASK_RESPONSE, {
-        requestId: payload.requestId,
-        cancelled: true,
-        results: payload.questions.map((q) => ({ id: q.id, selectedOptions: [] })),
-      });
+      answer({ cancelled: true, results: payload.questions.map((q) => ({ id: q.id, selectedOptions: [] })) });
       pending.delete(payload.requestId);
     });
 
@@ -223,6 +240,7 @@ function requestAskToClient(
 
 /** Test seam: reset the module singletons and tear down the subscriptions. */
 export function __resetForTests(): void {
+  generation++;
   refcount = 0;
   settled = false;
   sessionCtx = undefined;
