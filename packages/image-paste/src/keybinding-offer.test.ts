@@ -47,6 +47,7 @@ const {
   offerKeybindingFix,
   restoreNativePaste,
   runNativePasteRestore,
+  suiteMayClaimPasteKey,
   CREATED_NOTIFY,
   CREATED_RELOAD_HINT,
   RESTORED_NOTIFY,
@@ -1826,6 +1827,374 @@ describe("runNativePasteRestore — the refuse warning vs pi's own keybindings l
     expect(log).toContain("pi's own paste answers that key");
     expect(log).not.toMatch(/remove the .*entry/i);
     expect(notified).toContain("pi's own paste answers that key");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// The paste-key gate on the OFFER — issue #133
+// ══════════════════════════════════════════════════════════════════════════
+//
+// `suiteMayClaimPasteKey()` is the single predicate that decides whether the
+// suite holds pi's paste key this session, and until #133 the offer was not one
+// of its readers: `packages/image-paste/src/index.ts:201` (shortcut
+// registration) and `runNativePasteRestore` (`keybinding-offer.ts:778`) were its
+// only two callers. So a fresh profile with `suppressNativePaste: false` — the
+// escape hatch open, our shortcut deliberately NOT registered — still got the
+// offer, and accepting it wrote the very unbinding that leaves `ctrl+v` bound to
+// nobody: pi's action is cleared by the file and our handler is not there to
+// take the key. The next session's restore then emptied the file the offer had
+// just asked permission to create, and announced that it had.
+//
+// Two things the gate owes the user, both pinned below:
+//
+// * **Nothing to offer.** With the hatch open there is no shared key to
+//   disentangle, so the offer does not ask for permission to create a file this
+//   install has already decided it does not want, and emits no UI text at all.
+// * **Still armed.** The skip must not spend `keybindingsPromptDone`. The hatch
+//   is reversible; a user who closes it again must meet the offer in a later
+//   session, which is the whole point of an escape hatch you can undo.
+
+/** The two notices that must never describe the same file — see the invariant. */
+const CREATED_TEXT = /Created ~\/\.pi\/agent\/keybindings\.json/;
+const RESTORED_TEXT = /Restored pi's native clipboard paste/;
+
+describe("offerKeybindingFix — the paste-key gate (issue #133)", () => {
+  it("the hatch is open: no confirm, no file, no tmp, no notify, resolves false", async () => {
+    askForNativePaste();
+    const { ctx, confirm, notify } = makeCtx("tui");
+
+    await expect(offerKeybindingFix(ctx)).resolves.toBe(false);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(fs.existsSync(keybindingsPath())).toBe(false);
+    expect(fs.existsSync(tmpPath())).toBe(false);
+    // Not one UI message of any kind — in particular no "Created …" text.
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("the skip does NOT spend keybindingsPromptDone, and closing the hatch fires the offer on the same profile", async () => {
+    // The reversible-hatch case end to end, on ONE profile: skip → settings
+    // byte-identical → the user closes the hatch → the offer fires and accepting
+    // it works. The middle assertion is what makes this a proof rather than a
+    // hope: an implementation that marked the prompt done on the skip would
+    // leave the offer dead for every later session.
+    askForNativePaste();
+    const skipped = makeCtx("tui");
+    expect(await offerKeybindingFix(skipped.ctx)).toBe(false);
+
+    expect(readFlag()).toBe(false);
+    // Nothing was added to the namespace: the hatch-off object is untouched.
+    expect(readSettings()).toEqual({ [NAMESPACE]: { suppressNativePaste: false } });
+
+    writeSettings({ [NAMESPACE]: { suppressNativePaste: true } });
+    const armed = makeCtx("tui");
+    armed.confirm.mockResolvedValue(true);
+    await offerKeybindingFix(armed.ctx);
+
+    expect(armed.confirm).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(SNIPPET);
+    expect(readFlag()).toBe(true);
+  });
+
+  it("deleting the setting instead of closing it also re-arms the offer on the same profile", async () => {
+    // The other way back to the default: the key disappears entirely, and the
+    // offer that the skip withheld is delivered.
+    askForNativePaste();
+    await expect(offerKeybindingFix(makeCtx("tui").ctx)).resolves.toBe(false);
+    expect(readFlag()).toBe(false);
+
+    cleanupArtifacts();
+    writeSettings({ [NAMESPACE]: { enabled: true } });
+    const armed = makeCtx("tui");
+    armed.confirm.mockResolvedValue(true);
+    await offerKeybindingFix(armed.ctx);
+
+    expect(armed.confirm).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(keybindingsPath(), "utf-8")).toBe(SNIPPET);
+  });
+
+  it("gate 1 still wins: extension disabled + the hatch open → no confirm, no file, no flag", async () => {
+    // The gate matrix must not shift: the ADR 0012 in-package `enabled` read
+    // stays the first thing the offer consults, whichever way the hatch is set.
+    writeSettings({ [NAMESPACE]: { enabled: false, suppressNativePaste: false } });
+    const settingsBefore = readSettings();
+    const { ctx, confirm, notify } = makeCtx("tui");
+
+    await expect(offerKeybindingFix(ctx)).resolves.toBe(false);
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(fs.existsSync(keybindingsPath())).toBe(false);
+    expect(readSettings()).toEqual(settingsBefore);
+    expect(readFlag()).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("the gate uses the restore's strict rule: only a strict false withholds the offer (\"false\", 0, null, \"off\", true all still ask)", async () => {
+    // The two readers of the setting must not disagree about what "off" means:
+    // `runNativePasteRestore` refuses to act on a stringified "false", so the
+    // offer must not withhold itself on one either — otherwise the paste key
+    // would be left with neither an offer nor a restore.
+    for (const value of ["false", 0, null, "off", true]) {
+      cleanupArtifacts();
+      writeSettings({ [NAMESPACE]: { suppressNativePaste: value } });
+      const { ctx, confirm } = makeCtx("tui");
+      confirm.mockResolvedValue(false);
+
+      await offerKeybindingFix(ctx);
+
+      expect(confirm, JSON.stringify(value)).toHaveBeenCalledTimes(1);
+      // A decline still spends the flag, exactly as the gate matrix records.
+      expect(readFlag(), JSON.stringify(value)).toBe(true);
+    }
+  });
+
+  it("no skip path emits a Created text — and a hatch-off skip never touches the keybindings.json path", async () => {
+    // Two claims, both asserted rather than narrated:
+    //
+    // * No skip announces anything. Every row resolves `false`, asks nothing and
+    //   notifies nothing, so no "Created …" can reach a user on any way out of
+    //   the offer.
+    // * The hatch-off rows never look at `keybindings.json` at all. Gate 4's
+    //   check IS `existsSync(keybindingsPath)`, and `node:fs`'s `existsSync` is
+    //   spied in this file, so the rows below assert that the path is never
+    //   named: gate 1b demonstrably runs before gate 4, not merely somewhere
+    //   before the dialog. A mutation that moves the paste-key check after gate
+    //   4 fails here (verified: the spy then records the path for every
+    //   hatch-off row) — the shape of regression this sentence is for.
+    //
+    // Gate 3's flag read is a different story and is NOT claimed here: it reads
+    // settings.json through the same helper gate 1b itself uses, so its order is
+    // not observable from outside. What matters about gate 3 is asserted
+    // elsewhere — the reversible-hatch test above, and the gate matrix's rule
+    // that a non-asking row leaves settings.json byte-identical.
+    const skipPaths: Array<[string, Record<string, unknown>, Mode, boolean]> = [
+      ["hatch open, tui", { suppressNativePaste: false }, "tui", false],
+      ["hatch open, rpc", { suppressNativePaste: false }, "rpc", false],
+      ["hatch open, json", { suppressNativePaste: false }, "json", false],
+      ["hatch open, print", { suppressNativePaste: false }, "print", false],
+      [
+        "hatch open + flag already set",
+        { suppressNativePaste: false, keybindingsPromptDone: true },
+        "tui",
+        false,
+      ],
+      [
+        "hatch open + extension disabled",
+        { enabled: false, suppressNativePaste: false },
+        "tui",
+        false,
+      ],
+      ["hatch open + a directory where the file would be", { suppressNativePaste: false }, "tui", true],
+    ];
+
+    for (const [label, ns, mode, asDirectory] of skipPaths) {
+      cleanupArtifacts();
+      writeSettings({ [NAMESPACE]: ns });
+      if (asDirectory) fs.mkdirSync(keybindingsPath(), { recursive: true });
+      const { ctx, confirm, notify } = makeCtx(mode);
+      confirm.mockResolvedValue(true);
+      existsSyncSpy.mockClear();
+
+      await expect(offerKeybindingFix(ctx), label).resolves.toBe(false);
+
+      // Gate 4's check IS `existsSync(keybindingsPath)` and that call is spied,
+      // so a hatch-off skip naming the path at all would mean the paste-key gate
+      // ran after it. It must not be named — not for the absent file, not for the
+      // directory stand-in.
+      const namedPath = existsSyncSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((p) => p === keybindingsPath());
+      expect(namedPath, label).toEqual([]);
+
+      expect(confirm, label).not.toHaveBeenCalled();
+      expect(
+        callArgs(notify).some((c) => CREATED_TEXT.test(String(c[0]))),
+        label,
+      ).toBe(false);
+      expect(notify, label).not.toHaveBeenCalled();
+      if (asDirectory) {
+        expect(fs.statSync(keybindingsPath()).isDirectory(), label).toBe(true);
+        fs.rmSync(keybindingsPath(), { recursive: true, force: true });
+      } else {
+        expect(fs.existsSync(keybindingsPath()), label).toBe(false);
+      }
+    }
+  });
+});
+
+// ── the invariant: offer and restore are mutually exclusive ────────────────
+//
+// Stated in `docs/features/first-run-keybinding-offer.md` and in the code: for
+// one setting value only one of the two flows may act — the offer runs only when
+// `suiteMayClaimPasteKey()` is true, the restore only when it is false. So no
+// session creates `keybindings.json` and empties it again, and one run never
+// tells the user both "Created ~/.pi/agent/keybindings.json …" and "Restored
+// pi's native clipboard paste …" about one file. The sequenced pair across a
+// settings change is NOT covered here and is not a defect: accept the offer under
+// the default, close the hatch later, and the restore hands the key back — that
+// is the reversible hatch, exactly what the setting promises.
+//
+// This drives BOTH entry points in the order `meta/src/index.ts` runs them (the
+// offer from the merged first-run handler, the restore last in the registration
+// handler because a successful restore can call `ctx.reload()`) against real
+// files, so the invariant is an artefact rather than a comment.
+
+describe("the invariant — the offer and the restore cannot both act on keybindings.json", () => {
+  beforeEach(clearNoticeGuard);
+
+  /** What one session did, from the outside. */
+  interface Session {
+    offered: boolean;
+    /** Whether the offer got as far as asking the user. */
+    asked: boolean;
+    restore: NativePasteRestoreOutcome;
+    notices: string[];
+    file: string | null;
+    flag: boolean;
+  }
+
+  /**
+   * One session, both flows, meta's order. Base-shape ctxs (no `reload`), which
+   * is what the measured Pi versions hand a `session_start` handler, so neither
+   * flow reloads the runtime out from under the other and the file/notice
+   * effects are all that is left to judge.
+   *
+   * The namespace is MERGED into whatever settings the profile already holds,
+   * because that is what a user does: they edit one key in `settings.json`. So a
+   * second call inside one test is a later session on the same profile, and it
+   * keeps the flag an earlier session spent — replacing the namespace here would
+   * quietly reset the state the sequenced-pair test depends on.
+   */
+  async function runSession(
+    ns: Record<string, unknown>,
+    opts?: { confirmAnswer?: boolean; existingFile?: string },
+  ): Promise<Session> {
+    const before = readSettings();
+    const beforeNs = (before[NAMESPACE] ?? {}) as Record<string, unknown>;
+    writeSettings({ ...before, [NAMESPACE]: { ...beforeNs, ...ns } });
+    if (opts?.existingFile !== undefined) writeKeybindings(opts.existingFile);
+
+    const offer = makeCtx("tui");
+    offer.confirm.mockResolvedValue(opts?.confirmAnswer ?? true);
+    const offered = await offerKeybindingFix(offer.ctx);
+
+    const restore = makeCtx("tui");
+    const outcome = await runNativePasteRestore(restore.ctx);
+
+    return {
+      offered,
+      asked: offer.confirm.mock.calls.length > 0,
+      restore: outcome,
+      notices: [
+        ...callArgs(offer.notify).map((c) => String(c[0])),
+        ...callArgs(restore.notify).map((c) => String(c[0])),
+      ],
+      file: fs.existsSync(keybindingsPath())
+        ? fs.readFileSync(keybindingsPath(), "utf-8")
+        : null,
+      flag: readFlag(),
+    };
+  }
+
+  /** The hatch, open: the setting that flips which flow is allowed to act. */
+  const HATCH_OFF: Record<string, unknown> = { suppressNativePaste: false };
+  const hatchOn: Array<Record<string, unknown>> = [{}, { suppressNativePaste: true }];
+
+  it("hatch open, fresh profile: the session is silent end to end — no Created, no Restored, no file, still armed", async () => {
+    const s = await runSession(HATCH_OFF);
+
+    expect(s.offered).toBe(false);
+    expect(s.restore.kind).toBe("missing");
+    expect(s.file).toBe(null);
+    expect(s.flag).toBe(false);
+    // Before #133 this frame held exactly two notices: the offer wrote the file
+    // and said "Created …", the restore emptied it and said "Restored …". The
+    // hatch-off install never sees either one now.
+    expect(s.notices).toEqual([]);
+  });
+
+  it("hatch open with our artefact already on disk: only the restore acts, and the offer never speaks about that file", async () => {
+    const s = await runSession(HATCH_OFF, { existingFile: ARTEFACT_POST_123 });
+
+    expect(s.offered).toBe(false);
+    expect(s.restore.kind).toBe("restored");
+    expect(s.file).toBe("{}");
+    expect(s.notices.filter((t) => CREATED_TEXT.test(t))).toEqual([]);
+    expect(s.notices.filter((t) => RESTORED_TEXT.test(t))).toHaveLength(1);
+    // The offer stayed armed: the file it would have offered to create is the
+    // one the restore just handed back to pi.
+    expect(s.flag).toBe(false);
+  });
+
+  it.each([
+    ["the default (key absent)", {}],
+    ["hatch closed (suppressNativePaste: true)", { suppressNativePaste: true }],
+  ] as Array<[string, Record<string, unknown>]>)(
+    "%s: only the offer acts, and the restore reports suppressed",
+    async (_label, ns) => {
+      const s = await runSession(ns);
+
+      expect(s.offered).toBe(false); // base-shape ctx: no reload was available
+      expect(s.restore.kind).toBe("suppressed");
+      expect(s.file).toBe(SNIPPET); // the offer wrote the artefact …
+      expect(s.flag).toBe(true); // … and the accept spent the flag
+      expect(s.notices.filter((t) => RESTORED_TEXT.test(t))).toEqual([]);
+      expect(s.notices.filter((t) => CREATED_TEXT.test(t))).toHaveLength(1);
+    },
+  );
+
+  it("the sequenced pair across a settings change is the hatch, not the breach: Created in session one, Restored in session two", async () => {
+    // Greptile's read of the invariant, answered with a test rather than an
+    // argument. Session one, the default setting: the offer fires, writes the
+    // artefact and says "Created …".
+    const first = await runSession({});
+    expect(first.file).toBe(SNIPPET);
+    expect(first.notices.filter((t) => CREATED_TEXT.test(t))).toHaveLength(1);
+    expect(first.notices.filter((t) => RESTORED_TEXT.test(t))).toEqual([]);
+
+    // Session two on the SAME profile, with the user having closed the hatch: the
+    // restore gives the key back and says "Restored …". So one install does carry
+    // both texts — in order, one per session, each describing what that session
+    // did. That is the reversible hatch from ADR 0030, and the mutual exclusion
+    // above must not be read to forbid it: it binds a single configuration, and
+    // this case has two.
+    clearNoticeGuard();
+    const second = await runSession(HATCH_OFF);
+    expect(second.restore.kind).toBe("restored");
+    expect(second.file).toBe("{}");
+    expect(second.notices.filter((t) => RESTORED_TEXT.test(t))).toHaveLength(1);
+    // The offer stayed out of session two on both counts: the flag was spent in
+    // session one, and the hatch is open.
+    expect(second.asked).toBe(false);
+    expect(second.notices.filter((t) => CREATED_TEXT.test(t))).toEqual([]);
+  });
+
+  it("no configuration makes both flows act on one file", async () => {
+    for (const ns of [HATCH_OFF, ...hatchOn, { enabled: true, suppressNativePaste: false }]) {
+      cleanupArtifacts();
+      clearNoticeGuard();
+      const s = await runSession(ns);
+      const label = JSON.stringify(ns);
+
+      // The notices: never two verdicts about one file.
+      const created = s.notices.some((t) => CREATED_TEXT.test(t));
+      const restored = s.notices.some((t) => RESTORED_TEXT.test(t));
+      expect(created && restored, `${label}: both notices: ${JSON.stringify(s.notices)}`).toBe(
+        false,
+      );
+
+      // The same exclusivity one level down, on the flows themselves: the
+      // predicate that admits one must exclude the other.
+      if (suiteMayClaimPasteKey()) {
+        // The offer's configuration — the restore must have touched nothing.
+        expect(s.restore.kind, label).toBe("suppressed");
+      } else {
+        // The restore's configuration — the offer must not have asked about,
+        // written, or announced the file the restore is entitled to rewrite.
+        expect(s.asked, label).toBe(false);
+        expect(created, label).toBe(false);
+      }
+    }
   });
 });
 
