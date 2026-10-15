@@ -196,7 +196,12 @@ function clearField(send: (data: string) => void, seed: string): void {
 // ── The item set ────────────────────────────────────────────────────────────
 
 describe("item set", () => {
-  it("shows every archimedes item and its current value", async () => {
+  // One harness + render per item, so this scales with the number of settings:
+  // 1139 ms idle, but 3.2–7.1 s once the machine is loaded (the repo's type-check
+  // looped over it), and it timed out at the 5 s default in 2 of 5 pre-fix loaded
+  // runs (5151 ms, 5275 ms). The shield matches the other loaded-run offenders in
+  // #131; the assertions themselves are unchanged.
+  it("shows every archimedes item and its current value", { timeout: 30_000 }, async () => {
     const items = await realItems();
     expect(items.length).toBeGreaterThan(20);
     const unseen: string[] = [];

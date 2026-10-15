@@ -235,7 +235,12 @@ describe("PLUGINS manifest integrity", () => {
     }
   });
 
-  it("load() resolves for a real installed package (footer probe)", async () => {
+  // The one place the manifest is really imported, so this is a cold module-graph
+  // walk of the published `footer` package: 485 ms idle, 4389 ms in a loaded
+  // full-suite run (the repo's type-check looped over it) — inside the band that
+  // made #131 fail. Same class of shield as the other loaded-run cases; the
+  // assertion is unchanged.
+  it("load() resolves for a real installed package (footer probe)", { timeout: 10_000 }, async () => {
     const footer = PLUGINS.find((p): p is PluginDef => p.id === "footer");
     expect(footer).toBeDefined();
     const mod = await footer!.load();

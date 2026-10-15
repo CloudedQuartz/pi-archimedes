@@ -266,7 +266,12 @@ describe("getGitStatus", () => {
     expect(result).toEqual({ staged: 0, unstaged: 0, untracked: 0, ahead: 0, behind: 0 });
   });
 
-  it("property: parseGitOutput handles arbitrary git porcelain output without throwing", async () => {
+  // Each of the 100 default runs re-imports the module (`vi.resetModules` +
+  // dynamic import in `loadModule`), so the cost is module-graph work, not
+  // parsing: 1217 ms idle, but up to 8247 ms with the repo's own type-check
+  // looped over it, and it crossed the 5 s default in 2 of 5 pre-fix loaded runs
+  // (5118 ms, 5178 ms). Same shield as the subagent width audit — see #131.
+  it("property: parseGitOutput handles arbitrary git porcelain output without throwing", { timeout: 30_000 }, async () => {
     await fc.assert(
       fc.asyncProperty(fc.string({ maxLength: 500 }), async (output) => {
         const mockExecSync = vi.fn(() => output);
