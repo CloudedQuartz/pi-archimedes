@@ -203,6 +203,13 @@ function markPromptDone(ctx: ExtensionContext): void {
  * resolves `false` either way) sets the flag without touching the file. A
  * failed file write leaves the flag unset, so the offer self-heals next session.
  *
+ * **Precondition (gate 1b, issue #133):** the offer only exists for an install
+ * that is going to hold the paste key. While `suppressNativePaste` is `false`
+ * the suite registers no paste shortcut and the restore hands the key back, so
+ * there is nothing to fix and the offer stays silent — without consuming
+ * `keybindingsPromptDone`, because the setting is reversible and closing it again
+ * must still be met by the offer. See the invariant comment at the gate.
+ *
  * **Concurrent-session edge:** if the user runs `/new` or `/reload` while the
  * confirm dialog is still open, `ctx.ui.confirm` resolves `false` (the TUI
  * tears down). This counts as a decline — the flag is set and the offer will
@@ -211,8 +218,8 @@ function markPromptDone(ctx: ExtensionContext): void {
  *
  * **Return contract:** resolves `true` iff the offer triggered a successful
  * `ctx.reload()` (the successful-accept path on a ctx that exposes `reload()`
- * and the reload completed). Every other outcome — the gates (1–4), decline,
- * a failed file write, the file-exists race, a base-shape ctx without
+ * and the reload completed). Every other outcome — the gates (1, 1b, 2–4),
+ * decline, a failed file write, the file-exists race, a base-shape ctx without
  * `reload` (manual /reload hint), and a reload that itself failed (the TUI
  * shows its own "Reload failed" and the session continues on the still-valid
  * ctx) — resolves `false`. The meta factory uses this to sequence the
@@ -228,6 +235,51 @@ export async function offerKeybindingFix(ctx: ExtensionContext): Promise<boolean
   // registration, so there is no registration gate to catch it here.
   // See docs/decisions/0012-plugin-gate-in-package-namespace.md § Exception.
   if (!isConfigEnabled(NAMESPACE)) {
+    return false;
+  }
+
+  // Gate 1b: the suite must be the one holding the paste key, or there is
+  // nothing to offer.
+  //
+  // The subject of this whole flow is the file that unbinds pi's
+  // `app.clipboard.pasteImage` so our shortcut can own the key. With
+  // `archimedes.imagePaste.suppressNativePaste: false` the install has decided
+  // the opposite (ADR 0030's amendments): `registerImagePaste` registers no
+  // paste shortcut at all (the gate in packages/image-paste/src/index.ts) and
+  // `runNativePasteRestore` takes the unbinding back out of the file below. Offering to create it anyway asked
+  // permission for a file this install does not want, left `ctrl+v` bound to
+  // nobody (pi's action cleared by the file we just wrote, our handler not
+  // registered to take the key), and handed the next session's restore an
+  // artefact to empty — so "Created ~/.pi/agent/keybindings.json" and "Restored
+  // pi's native clipboard paste" both described one file, one session apart.
+  // Issue #133.
+  //
+  // WHY HERE: it is a settings read from the same namespace as gate 1, and both
+  // answer "does this install want this flow at all", so the two configuration
+  // preconditions sit together; the position also puts it before gate 3 reads
+  // `keybindingsPromptDone` and before gate 4 stats `keybindings.json`, so a
+  // hatch-off install does no per-session filesystem work for a flow it cannot
+  // take part in. Inserting it as a numbered gate 2 was rejected: the existing
+  // gate numbers are cited outside this file — `docs/features/
+  // first-run-keybinding-offer.md`, ADR 0030's amendment ("gate 4 of the
+  // first-run offer refuses to touch a file that is already there") and the
+  // comments in `keybinding-offer.test.ts` — and renumbering would silently
+  // point every one of those citations at the wrong check. Gate 1 keeps first
+  // place (the ADR 0012 exception), and gate 2 keeps its documented reason for
+  // not consuming the flag in non-TUI modes.
+  //
+  // It must NOT consume `keybindingsPromptDone`. The hatch is reversible: the
+  // user who sets `suppressNativePaste` back to `true` has to meet the offer in
+  // a later session, which is the whole value of an escape hatch you can undo.
+  // Like gate 2's non-TUI skip, this one leaves the offer armed.
+  //
+  // INVARIANT (mirrored at the head of `runNativePasteRestore`): the offer acts
+  // only when `suiteMayClaimPasteKey()` is true, the restore only when it is
+  // false. The two are mutually exclusive by construction, so *Created* and
+  // *Restored* can never both describe the same file in one install. Pinned by
+  // the "the invariant" describe in `keybinding-offer.test.ts`, which drives
+  // both entry points in the order `meta/src/index.ts` runs them.
+  if (!suiteMayClaimPasteKey()) {
     return false;
   }
 
@@ -775,6 +827,12 @@ export async function runNativePasteRestore(
 ): Promise<NativePasteRestoreOutcome> {
   // Same predicate the shortcut gate reads, so the file restore and the
   // registration can never disagree about what the user asked for.
+  //
+  // INVARIANT (mirrored at gate 1b of `offerKeybindingFix`): the restore acts
+  // only when the suite will NOT claim the paste key, and the offer acts only
+  // when it will. Mutually exclusive, so one install can never be told both
+  // "Created ~/.pi/agent/keybindings.json" and "Restored pi's native clipboard
+  // paste" about the same file.
   if (suiteMayClaimPasteKey()) {
     return { kind: "suppressed" };
   }
