@@ -37,8 +37,8 @@
     "typescript": "^6.0.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.1.0",
+    "@earendil-works/pi-ai": ">=1.2.0",
     "@earendil-works/pi-coding-agent": ">=1.2.0",
-    "@earendil-works/pi-tui": ">=0.1.0"
+    "@earendil-works/pi-tui": ">=1.2.0"
   }
 }

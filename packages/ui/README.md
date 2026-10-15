@@ -5,6 +5,7 @@ TUI enhancements for the Pi Archimedes monorepo.
 ## Features
 
 ### Bash Tool Styling
+- **Pi's tool, our row**: `bash` stays pi's own built-in tool — this package never registers it. It installs one `pi.registerToolRenderer()` resolver that decides how calls to `bash` are drawn, so pi keeps the executor, description, reachability and activation of that tool.
 - **Collapsed/Expanded Views**: Toggleable tool execution details.
 - **Live Timer**: Track tool execution duration.
 - **Status Indicators**:
@@ -14,12 +15,12 @@ TUI enhancements for the Pi Archimedes monorepo.
 
 ### Codemode Tool Styling
 - **Styling follows the `toolStyle` master switch**:
-  - **Minimal** (default): the override is registered — the collapsed row is the `codemode` header plus the nested tool calls the script made (last five, with an expand hint when there are more) — no script dump, no summary line. A script that made no calls shows a single `<glyph> <duration>` line instead.
-  - **Native**: the override is not registered at all — pi's native codemode rendering stands (and no built-in-takeover startup notice).
+  - **Minimal** (default): the resolver answers with our row — the collapsed row is the `codemode` header plus the nested tool calls the script made (last five, with an expand hint when there are more) — no script dump, no summary line. A script that made no calls shows a single `<glyph> <duration>` line instead.
+  - **Native**: the resolver answers `next()` — pi's own codemode rendering stands.
 - **Expanded View**: The syntax-highlighted script, every nested call (status glyph, args, duration, and cost for `models.*` calls, with a `Model calls: $total` line when several were priced), the script output without the executor's `Script completed/failed` header (image blocks show a `[Image: …]` indicator — the renderer is text-only), the full-output path when truncated, and the timing + final status.
 - **Live Timer**: In-flight calls show the `…` running glyph and update every second.
-- **Native Behaviour Preserved**: The override re-registers pi's own `codemode` tool (executor, dynamic description, activation semantics all intact) and replaces only the presentation — so it takes over pi's replaceable built-in `codemode` extension (pi prints a one-line startup notice, as it does for any extension that replaces a built-in).
-- **Graceful Fallback**: On pi versions without the `codemode` extension the override is a no-op and pi's native rendering stands in.
+- **Native Behaviour Preserved**: `codemode` is pi's own built-in extension and stays that way — nothing in this package registers it, so pi keeps the QuickJS executor, the dynamic description, the per-tool prompt guidelines and `defaultActive: false`, and no "built-in extension was not loaded" startup notice appears because nothing was replaced. Only the presentation is ours (ADR 0029).
+- **Graceful Fallback**: The styling is installed behind `typeof pi.registerToolRenderer === "function"` (pi 1.0.1+), so a host without that API gets pi's own rendering for `bash` and `codemode` alike; a session with no `codemode` tool is simply never asked about it.
 
 ### Editor
 - **HephaestusEditor**: Advanced text editing capabilities.
