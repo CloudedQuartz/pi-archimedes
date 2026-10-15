@@ -6,9 +6,10 @@
  * `/settings` — wrapped in the shared overlay chrome from
  * `@pi-archimedes/core/overlay` (`wrapWithBorder`, `renderHeader`,
  * `renderFooter`) so `/archimedes` and `/plugins` look like every other
- * archimedes panel while the rows, their alignment, the selected-row
- * description and the change hint come from pi. The theme wiring below is
- * pi's `getSettingsListTheme()` (`pi-coding-agent`
+ * archimedes panel while the rows, their alignment and the change hint come from
+ * pi. The description area is the one block this panel draws itself, because pi
+ * sizes it from the selected row alone (see `descriptionSlot`). The theme wiring
+ * below is pi's `getSettingsListTheme()` (`pi-coding-agent`
  * `dist/modes/interactive/theme/theme.js:896`) re-anchored on the `Theme`
  * instance pi hands the overlay factory: accent for the selected label and the
  * cursor, accent/muted for the value, dim for description and hint. Every
@@ -18,7 +19,7 @@
  * bracketed-paste framing: `\x1b[200~`/`\x1b[201~` to seed the free-input field
  * and to refuse a paste into a number field.
  *
- * Two pieces stay ours because pi's component does not offer them:
+ * Three pieces stay ours because pi's component does not offer them:
  *
  * - **Search.** `SettingsList`'s `enableSearch` shows a fuzzy filter box
  *   permanently, which would (a) swallow the `s` keystroke the panel needs for
@@ -31,15 +32,23 @@
  *   step against it. The mirror is addressed by `item.id`, so the caller's ids
  *   have to be unique: with two rows sharing one, `selectItem` finds the first
  *   and the drawn cursor and the mirrored index part company. Everything else
- *   about a row is keyed by id as well (the label map, `prompts`, the write
- *   guard), so uniqueness is a precondition of the panel rather than of the
- *   mirror. The wrapper forwards every keystroke it does not consume itself and
+ *   about a row is keyed by id as well (the label map, the description map,
+ *   `prompts`, the write guard), so uniqueness is a precondition of the panel
+ *   rather than of the mirror. The wrapper forwards every keystroke it does not
+ *   consume itself and
  *   exposes no `handleMouse`, so nothing can move the list's own index behind
  *   the mirror's back — but `SettingsList` does implement `handleMouse`, and
  *   that silence is the wrapper's, not the component's.
  *   Enter/Space are forwarded untouched, which is what makes the free-input row
  *   work: an editable item carries a `submenu`, and pi's component opens
  *   whatever component that returns.
+ * - **The description area.** `SettingsList` draws the description of the row it
+ *   has selected, so the height of what it renders — and of the border this
+ *   panel puts around it — moved every time the cursor landed on a row whose
+ *   description wrapped further than the last one. The rows are handed over with
+ *   no `description` (that block is the only thing the component reads the field
+ *   for) and the area is drawn here instead, padded to the tallest description in
+ *   the filtered set — `descriptionSlot`.
  *
  * The rows are copied out of `opts.items` once, at construction: the panel does
  * not notice rows added to or removed from the caller's array while it is open,
@@ -84,6 +93,7 @@ import {
   wrapWithBorder,
   borderContentWidth,
   visibleWidth,
+  wrapText,
 } from "@pi-archimedes/core/overlay";
 
 // ── Public types ────────────────────────────────────────────────────────────
@@ -120,6 +130,20 @@ const PROMPT_KEYS = " [enter] confirm  [esc] cancel ";
 const EDITABLE_HINT = "Enter to type a value";
 /** Shown when the search filters everything out (the wording the panel has always used). */
 const NO_MATCHES = "No matching settings";
+/**
+ * The description block is drawn two columns in, and wrapped `DESCRIPTION_INSET`
+ * columns narrower than the content area — both exactly what `SettingsList` did
+ * with it (`pi-tui@1.2.0 dist/components/settings-list.js:107-109`), so the text
+ * still lands where it used to.
+ */
+const DESCRIPTION_INDENT = 2;
+const DESCRIPTION_INSET = 4;
+/**
+ * The blank line plus the hint line `SettingsList` appends to a non-empty list
+ * (`settings-list.js:113` → `addHintLine`, `:245-250`). The description area is
+ * inserted above that pair, which is where the area has always sat.
+ */
+const HINT_BLOCK_LINES = 2;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -182,10 +206,20 @@ export function createSettingsManager(opts: SettingsManagerOptions): {
   const labels = new Map<string, string>();
 
   /**
+   * The text the description area shows, per row id — the caller's description,
+   * with the editable affordance composed in. It lives here and NOT on the row
+   * because `SettingsList` draws the description of the selected row and nothing
+   * else, which makes its output (and this panel's border) as tall as whichever
+   * row the cursor happens to be on: see `descriptionSlot`. Keyed by id exactly
+   * like `labels`, so nothing about how per-row state is tracked changes shape.
+   */
+  const descriptions = new Map<string, string>();
+
+  /**
    * Rows as the list sees them: one per caller item, kept here so a write
    * survives a filter rebuild and the caller's own item objects are never
-   * touched. Descriptions gain the editable affordance; editable rows gain the
-   * submenu that opens the field.
+   * touched. No row carries a `description`; editable rows gain the submenu that
+   * opens the field.
    */
   const rows: SettingItem[] = opts.items.map((item) => {
     const descriptor = opts.prompts[item.id];
@@ -195,10 +229,13 @@ export function createSettingsManager(opts: SettingsManagerOptions): {
       label: padEnd(item.label, labelColumn),
       currentValue: item.currentValue,
     };
-    if (item.description !== undefined) row.description = item.description;
+    // Falsy descriptions are not stored: that is the case `SettingsList` drew
+    // nothing for, and the area must not start reserving a line over it.
+    if (item.description) descriptions.set(item.id, item.description);
     if (item.values !== undefined) row.values = item.values;
     if (!descriptor) return row;
-    row.description = row.description ? `${row.description} · ${EDITABLE_HINT}` : EDITABLE_HINT;
+    const base = descriptions.get(item.id);
+    descriptions.set(item.id, base ? `${base} · ${EDITABLE_HINT}` : EDITABLE_HINT);
     row.submenu = (currentValue, done) => openField(descriptor, currentValue, done);
     return row;
   });
@@ -416,6 +453,65 @@ export function createSettingsManager(opts: SettingsManagerOptions): {
   // ── Render ────────────────────────────────────────────────────────────────
 
   /**
+   * Lines the description area occupies at this width: the tallest description
+   * among every row the current filter is showing, wrapped the way the area
+   * wraps.
+   *
+   * Over the whole filtered set, deliberately — never the visible scroll window.
+   * Sized by the window, the frame would start growing again the moment the
+   * window scrolled past a longer description than anything in it.
+   */
+  function descriptionAreaHeight(contentWidth: number): number {
+    const wrapAt = contentWidth - DESCRIPTION_INSET;
+    let height = 0;
+    for (const row of shownRows()) {
+      const text = descriptions.get(row.id);
+      if (!text) continue;
+      height = Math.max(height, wrapText(text, wrapAt).length);
+    }
+    return height;
+  }
+
+  /**
+   * The description area, drawn here rather than by `SettingsList`.
+   *
+   * pi's component draws the description of the row it has selected and no
+   * other's, wrapped to `width - 4` (`pi-tui@1.2.0
+   * dist/components/settings-list.js:103-111`), so its output grew by a row every
+   * time the cursor landed on a row whose description wrapped further than the
+   * last one's — and because this panel frames `list.render()` in a border, the
+   * whole list shifted up. The rows it is handed carry no `description` at all
+   * (that block is the only thing the component reads the field for), and this
+   * takes its place: the selected row's text, wrapped and indented exactly as pi
+   * did it, then padded with blank lines to the tallest description in the set.
+   * Moving the cursor can no longer change the frame height, and no description
+   * is ever cut short to achieve that.
+   *
+   * Height changes that are NOT cursor-driven are left as they are, on purpose:
+   * arming the `/` search adds the search row, and opening a free-input field
+   * replaces the list with the field. Both are a different panel the user asked
+   * for, not the same panel moving under the cursor — do not "fix" those too.
+   */
+  function descriptionSlot(contentWidth: number): string[] {
+    const height = descriptionAreaHeight(contentWidth);
+    // Nothing in the set has a description: the area contributes nothing, not
+    // even a reserved blank row.
+    if (height === 0) return [];
+    const text = descriptions.get(shownRows()[cursor]?.id ?? "");
+    const wrapped = text ? wrapText(text, contentWidth - DESCRIPTION_INSET) : [];
+    const indent = " ".repeat(DESCRIPTION_INDENT);
+    // The gap above the block is the one `SettingsList` used to put there.
+    const lines: string[] = [padEnd("", contentWidth)];
+    for (let line = 0; line < height; line++) {
+      const drawn = wrapped[line] ?? "";
+      // Colour through the list theme's `description` token, so the colour
+      // decision stays in one place (`listTheme`).
+      lines.push(drawn ? listTheme.description(`${indent}${drawn}`) : padEnd("", contentWidth));
+    }
+    return lines;
+  }
+
+  /**
    * The list, or the empty-filter message. The filter is ours, so an empty
    * result is ours to report — handed an empty item set `SettingsList` would
    * say "No settings available", which is about a panel with no settings at all.
@@ -424,7 +520,19 @@ export function createSettingsManager(opts: SettingsManagerOptions): {
     if (searchInput.getValue() && shownRows().length === 0) {
       return [theme.fg("dim", `  ${NO_MATCHES}`)];
     }
-    return list.render(contentWidth);
+    const body = list.render(contentWidth);
+    // While a field is open the list renders the field in place of the rows, and
+    // the description area is part of the list, not of the field.
+    if (promptOpen) return body;
+    const slot = descriptionSlot(contentWidth);
+    if (slot.length === 0) return body;
+    // Spliced in where pi used to draw the block: above the blank line and the
+    // hint line `addHintLine` appends. A body that does not end that way (the
+    // zero-row message stops before the hint) gets the slot after it.
+    const hintStart = body.length - HINT_BLOCK_LINES;
+    const aboveHint = hintStart >= 0 && body[hintStart] === "";
+    const at = aboveHint ? hintStart : body.length;
+    return [...body.slice(0, at), ...slot, ...body.slice(at)];
   }
 
   function render(width: number): string[] {
