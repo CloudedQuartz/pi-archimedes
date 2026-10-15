@@ -18,7 +18,12 @@ describe("patchThinkingRenderer", () => {
 		vi.resetModules();
 	});
 
-	it("returns early when AssistantMessageComponent is undefined", async () => {
+	// This is the first test in the file, so it pays the cold `vi.resetModules()` +
+	// `import("./patch.js")` before the mocks are in place: 419 ms idle, 3803 ms with
+	// 3 type-check workers on the same 8 cores, and 6105 ms — past the 5 s default —
+	// with 5. 10 s is the shield this failure class already uses in
+	// `core/src/bridge/index.test.ts`, and clears the worst episode measured here.
+	it("returns early when AssistantMessageComponent is undefined", { timeout: 10_000 }, async () => {
 		vi.doMock("@earendil-works/pi-coding-agent", () => ({
 			AssistantMessageComponent: undefined,
 			VERSION: "1.0.0",

@@ -639,7 +639,15 @@ describe("subagent tool rows: width audit", () => {
     expect(failures, failures.join("\n  ")).toEqual([]);
   });
 
-  it("holds the invariant for arbitrary content (fast-check)", () => {
+  // A loaded runner, not the content, is what costs time here. Across 20 full-suite
+  // runs this test measured ~3.5 s idle, but 4.4–12.9 s *uncapped* while the repo's
+  // own type-check looped over it (3–5 `tsc` workers on 8 cores), and the five runs
+  // vitest cut at its 5 s default recorded 6.1 / 6.7 / 10.0 / 10.8 / 14.9 s — it
+  // failed 5 of 5 pre-fix loaded runs, which is issue #131. 30 s clears the worst
+  // episode measured (12932 ms) with room to spare while still bounding a hang.
+  // `numRuns` is deliberately untouched: shrinking the generator's coverage is a
+  // separate decision from giving a slow-but-correct test room to finish.
+  it("holds the invariant for arbitrary content (fast-check)", { timeout: 30_000 }, () => {
     const widths = [200, 120, 80, 60, 40];
     // Wide-character and emoji content, plus whatever else the generator likes.
     // Long by construction: a short string is never truncated, so a generator
