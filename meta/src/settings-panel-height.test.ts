@@ -133,10 +133,24 @@ const withoutDescriptions = (source: SettingItem[]): SettingItem[] =>
     return rest as SettingItem;
   });
 
-/** The real panel shape: 26 rows, so the list scrolls and draws its `(n/26)` counter. */
-function manyItems(count = 26): SettingItem[] {
+/**
+ * The real panel shape: 26 rows, so the list scrolls and draws its `(n/26)`
+ * counter. `longAt` parks the only long description on one row and gives every
+ * other row a 1-line one, which is the shape that tells a description area sized
+ * by the whole filtered set apart from one sized by the visible window.
+ */
+function manyItems(count = 26, longAt?: number): SettingItem[] {
   return Array.from({ length: count }, (_unused, i): SettingItem => {
-    const description = i % 3 === 0 ? LONG : i % 3 === 1 ? SHORT : undefined;
+    const description =
+      longAt === undefined
+        ? i % 3 === 0
+          ? LONG
+          : i % 3 === 1
+            ? SHORT
+            : undefined
+        : i === longAt
+          ? LONG
+          : SHORT;
     return {
       id: `item${i}`,
       label: `Setting ${i}`,
@@ -268,6 +282,33 @@ describe("frame height against cursor position", () => {
       const heights = heightsAtEveryIndex(set, frameWidth);
       expect(new Set(heights).size, `heights at width ${frameWidth}: ${heights.join(", ")}`).toBe(1);
     }
+  });
+
+  it("is unchanged when the scroll window moves past the one long description", () => {
+    // Ten rows are on screen and there are 26, so the window slides as the cursor
+    // walks. Here exactly one row — the twentieth — carries a description longer
+    // than every other, and it starts off-screen. An area sized from the visible
+    // window would grow the frame the moment the window reached it; an area sized
+    // from the whole filtered set reserves that space from the first frame.
+    const LONG_ROW = 20;
+    const set = manyItems(26, LONG_ROW);
+    for (const frameWidth of [NARROW, WIDE]) {
+      const heights = heightsAtEveryIndex(set, frameWidth);
+      expect(new Set(heights).size, `heights at width ${frameWidth}: ${heights.join(", ")}`).toBe(1);
+    }
+    // Tripwire that the walk above really crossed the boundary: the long row is
+    // outside the drawn window at the start and inside it once the cursor gets
+    // there, so the heights compared above were taken on either side of it.
+    const atStart = panel(set).cells(WIDE).join("\n");
+    const atTheLongRow = panel(set).to(LONG_ROW).cells(WIDE).join("\n");
+    expect(atStart).not.toContain(`Setting ${LONG_ROW}`);
+    expect(atTheLongRow).toContain(`Setting ${LONG_ROW}`);
+    expect(atTheLongRow).toContain(LONG.split(" ").slice(0, 3).join(" "));
+    // And with the cursor back on a 1-line row, the area is still the tall one.
+    const backToStart = panel(set).to(LONG_ROW).press(KEY.up).cells(WIDE).join("\n");
+    expect(backToStart).toContain(SHORT);
+    expect(backToStart).not.toContain(LONG.split(" ").slice(0, 3).join(" "));
+    expect(panel(set).to(LONG_ROW).press(KEY.up).height(WIDE)).toBe(panel(set).height(WIDE));
   });
 
   it("is the same whether or not the search row is open, per search state", () => {
