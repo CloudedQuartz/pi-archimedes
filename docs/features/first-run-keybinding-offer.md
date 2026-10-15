@@ -1,7 +1,7 @@
 ---
 status: live
 last-verified: 2026-10-15
-verified-by: "npx vitest run — packages/image-paste/src/keybinding-offer.test.ts (179 tests: gate matrix, return contract, auto-reload fallback + branch ordering, updateConfig concurrency, generated $schema, the offer text, the accept-set and its edges, one refusal test per refuse reason for the untouched warning, one per claim the wording makes about the file, the gate 1b paste-key skip with its reversible-hatch case, and the offer/restore mutual-exclusion invariant driven in meta's order) + packages/image-paste/src/shortcut-gate.test.ts (9 tests: the paste shortcut is not registered while suppressNativePaste is false, per session) + meta/src/factory-lifecycle.test.ts (13 tests: merged first-run handler wiring + sequencing) + meta/src/readme-agreement.test.ts (6 tests: README.md and meta/README.md agree on what the suite writes to keybindings.json, and no user-facing page carries a claim the code makes false). Re-run whole-suite on 2026-10-15 for the gate 1b fix: 2460 tests / 146 files. The before/after frames in the table above are that vitest measurement (a scratch agent dir, two base-shape ctxs), not a terminal capture. The pi-behaviour claims in this file rest on the earlier live capture of 2026-10-14 against pi 1.2.0 in a scratch PI_CODING_AGENT_DIR; the loader claims (legacy-name rename, whole-file discard) were checked against pi 1.2.0 and 0.87.0 dist/core/keybindings.js, and nothing in the gate 1b change re-ran either."
+verified-by: "npx vitest run — packages/image-paste/src/keybinding-offer.test.ts (180 tests: gate matrix, return contract, auto-reload fallback + branch ordering, updateConfig concurrency, generated $schema, the offer text, the accept-set and its edges, one refusal test per refuse reason for the untouched warning, one per claim the wording makes about the file, the gate 1b paste-key skip with its reversible-hatch case and its `existsSync`-spy proof that the hatch-off path never names keybindings.json, and the offer/restore mutual exclusion driven in meta's order including the sequenced pair across a settings change) + packages/image-paste/src/shortcut-gate.test.ts (9 tests: the paste shortcut is not registered while suppressNativePaste is false, per session) + meta/src/factory-lifecycle.test.ts (13 tests: merged first-run handler wiring + sequencing) + meta/src/readme-agreement.test.ts (6 tests: README.md and meta/README.md agree on what the suite writes to keybindings.json, and no user-facing page carries a claim the code makes false). Re-run whole-suite on 2026-10-15 for the gate 1b fix: 2461 tests / 146 files. The before/after frames in the table above are that vitest measurement (a scratch agent dir, two base-shape ctxs), not a terminal capture. The pi-behaviour claims in this file rest on the earlier live capture of 2026-10-14 against pi 1.2.0 in a scratch PI_CODING_AGENT_DIR; the loader claims (legacy-name rename, whole-file discard) were checked against pi 1.2.0 and 0.87.0 dist/core/keybindings.js, and nothing in the gate 1b change re-ran either."
 ---
 
 # First-run keybinding offer
@@ -74,11 +74,15 @@ the generated snippet is checked against that published schema.
    *Why it is numbered 1b rather than inserted as gate 2:* it is a settings read
    of the same namespace as gate 1 and answers the same question ("does this
    install want this flow at all"), so the two configuration preconditions sit
-   together, ahead of gate 3's read of `keybindingsPromptDone` and gate 4's stat
-   of `keybindings.json` — a profile that opted out does no filesystem work for
-   the flow. Renumbering 2/3/4/5 was rejected: those numbers are quoted outside
-   the code (this file, ADR 0030's amendment — "gate 4 of the first-run offer
-   refuses to touch a file that is already there" — and comments in
+   together. That position also puts the skip ahead of gate 4's stat of
+   `keybindings.json` — asserted, not narrated: gate 4's check is
+   `existsSync(keybindingsPath)`, `node:fs`'s `existsSync` is spied in the test
+   file, and the hatch-off rows assert the path is never named. (Gate 3's flag
+   read is also skipped by position, but it is not observable from outside —
+   gate 1b reads settings.json itself, as gate 1 already did — so nothing claims
+   to prove it.) Renumbering 2/3/4/5 was rejected: those numbers are quoted
+   outside the code (this file, ADR 0030's amendment — "gate 4 of the first-run
+   offer refuses to touch a file that is already there" — and comments in
    `keybinding-offer.test.ts`), and a renumber would silently point them at the
    wrong check. Gate 1 keeps first place because the ADR 0012 exception it
    documents is the outermost condition, and gate 2 keeps its own reason for not
@@ -95,13 +99,23 @@ the generated snippet is checked against that published schema.
 The offer acts only when `suiteMayClaimPasteKey()` is true (gate 1b); the
 restore acts only when it is false (`runNativePasteRestore` returns
 `"suppressed"` the moment the predicate is true, and reads the same settings
-key with the same strict rule — only a literal `false` counts). So the two
-notices this file owns — *Created ~/.pi/agent/keybindings.json* and *Restored
-pi's native clipboard paste* — can never describe the same file in one install,
-and neither flow can undo what the other just did to it. Issue #133 was exactly
-the breach of this: a fresh profile with the hatch open got the offer, accepted
-it, and the next session's restore deleted what had just been created, two
-contradictory notices for one file and a pointless permission prompt.
+key with the same strict rule — only a literal `false` counts). **For a given
+setting value, exactly one of the two flows can act**, so no session ever
+creates `~/.pi/agent/keybindings.json` and then empties it, and one run never
+tells the user both *Created ~/.pi/agent/keybindings.json* and *Restored pi's
+native clipboard paste* about one file. Issue #133 was exactly that shape: a
+fresh profile with the hatch open got the offer, accepted it, and the restore in
+the same configuration deleted what had just been created — two contradictory
+notices for one file, and a dead `ctrl+v` in between.
+
+What the invariant does **not** forbid is the sequenced pair across a settings
+change, and that is deliberate: accept the offer under the default, then set
+`suppressNativePaste: false` in a later session, and the restore gives the key
+back with its own notice. That is the escape hatch doing what it promises, not a
+breach — the exclusivity is per configuration, not per machine. A user who
+reports seeing *Created* once and *Restored* later after flipping the setting is
+describing correct behaviour; the bug is only when both happen without the
+setting ever moving.
 
 The invariant is an artefact, not an intention: the
 "the invariant — the offer and the restore cannot both act on keybindings.json"
@@ -116,7 +130,6 @@ a fresh profile, before and after the gate:
 |---|---|---|
 | `suppressNativePaste: false` | confirm asked; file written, then emptied to `{}`; notices: *Created …* **and** *Restored …*; flag spent | confirm never asked; file never created; **no notice at all**; flag still unset (armed) |
 | default (key absent) | confirm asked; artefact written; *Created …*; restore `suppressed` | unchanged |
-
 ## Offer-once semantics
 
 The `keybindingsPromptDone` flag is set on **every** outcome that reached the
@@ -129,11 +142,13 @@ dialog:
 - **Decline** (confirm → `false`) — flag set; file untouched.
 - **Cancel** (Esc / session tear-down / timeout — `confirm` resolves `false` either way) — counts as decline; flag set.
 
-The flag is deliberately **not** set by the gates that skip in order to wait:
-gate 2 (not a TUI session) and gate 1b (the hatch is open, the suite will not
-hold the key). Both leave the offer armed for a session where the condition
-changes. Gates 1, 3 and 4 end the flow for good — the plugin is off, the user
-answered, or the file exists.
+The flag is deliberately **not** written by any gate — 1, 1b, 2, 3 and 4 all
+return before it. Only reaching the dialog spends it, so every skip is
+revisitable: enable the plugin later (gate 1), close the hatch (gate 1b), start a
+TUI session instead of a piped one (gate 2) or delete a `keybindings.json` (gate
+4) and the offer is still armed. Gate 3 is the terminal one, and it is terminal
+only because the dialog already spent the flag — it is the record of an answer,
+not a consequence of a skip.
 
 To reset the offer, delete the `keybindingsPromptDone` key from
 `archimedes.imagePaste` in `~/.pi/agent/settings.json`.

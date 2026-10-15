@@ -256,29 +256,37 @@ export async function offerKeybindingFix(ctx: ExtensionContext): Promise<boolean
   //
   // WHY HERE: it is a settings read from the same namespace as gate 1, and both
   // answer "does this install want this flow at all", so the two configuration
-  // preconditions sit together; the position also puts it before gate 3 reads
-  // `keybindingsPromptDone` and before gate 4 stats `keybindings.json`, so a
-  // hatch-off install does no per-session filesystem work for a flow it cannot
-  // take part in. Inserting it as a numbered gate 2 was rejected: the existing
-  // gate numbers are cited outside this file — `docs/features/
-  // first-run-keybinding-offer.md`, ADR 0030's amendment ("gate 4 of the
-  // first-run offer refuses to touch a file that is already there") and the
-  // comments in `keybinding-offer.test.ts` — and renumbering would silently
-  // point every one of those citations at the wrong check. Gate 1 keeps first
-  // place (the ADR 0012 exception), and gate 2 keeps its documented reason for
-  // not consuming the flag in non-TUI modes.
+  // preconditions sit together; the position also puts it before gate 4 stats
+  // keybindings.json, and that half is asserted — gate 4's check IS
+  // `existsSync(keybindingsPath)` and the spy over `node:fs`'s `existsSync` shows
+  // a hatch-off skip never names the path (moving this check after gate 4 fails
+  // that test). Gate 3's flag read is skipped by the same position but is not
+  // observable from outside — this gate reads settings.json itself, as gate 1
+  // already did — so nothing claims to prove that half. Inserting it as a
+  // numbered gate 2 was rejected: the existing gate numbers are cited outside this
+  // file — `docs/features/first-run-keybinding-offer.md`, ADR 0030's amendment
+  // ("gate 4 of the first-run offer refuses to touch a file that is already
+  // there") and the comments in `keybinding-offer.test.ts` — and renumbering would
+  // silently point every one of those citations at the wrong check. Gate 1 keeps
+  // first place (the ADR 0012 exception), and gate 2 keeps its documented reason
+  // for not consuming the flag in non-TUI modes.
   //
   // It must NOT consume `keybindingsPromptDone`. The hatch is reversible: the
   // user who sets `suppressNativePaste` back to `true` has to meet the offer in
   // a later session, which is the whole value of an escape hatch you can undo.
   // Like gate 2's non-TUI skip, this one leaves the offer armed.
   //
-  // INVARIANT (mirrored at the head of `runNativePasteRestore`): the offer acts
-  // only when `suiteMayClaimPasteKey()` is true, the restore only when it is
-  // false. The two are mutually exclusive by construction, so *Created* and
-  // *Restored* can never both describe the same file in one install. Pinned by
-  // the "the invariant" describe in `keybinding-offer.test.ts`, which drives
-  // both entry points in the order `meta/src/index.ts` runs them.
+  // INVARIANT (mirrored at the head of `runNativePasteRestore`): for a given
+  // configuration the two flows are mutually exclusive — the offer acts only
+  // when `suiteMayClaimPasteKey()` is true, the restore only when it is false.
+  // So no session can both create the file and hand it back, and one run can
+  // never tell the user "Created …" and "Restored …" about the same file. What
+  // this does NOT forbid is the sequenced pair across a settings change: accept
+  // the offer today, set `suppressNativePaste: false` tomorrow, and the restore
+  // gives the key back — that is the hatch doing what it says, not a breach. It
+  // forbids the #133 shape, where both fired under one unchanged setting.
+  // Pinned by the "the invariant" describe in `keybinding-offer.test.ts`, which
+  // drives both entry points in the order `meta/src/index.ts` runs them.
   if (!suiteMayClaimPasteKey()) {
     return false;
   }
@@ -828,11 +836,13 @@ export async function runNativePasteRestore(
   // Same predicate the shortcut gate reads, so the file restore and the
   // registration can never disagree about what the user asked for.
   //
-  // INVARIANT (mirrored at gate 1b of `offerKeybindingFix`): the restore acts
-  // only when the suite will NOT claim the paste key, and the offer acts only
-  // when it will. Mutually exclusive, so one install can never be told both
-  // "Created ~/.pi/agent/keybindings.json" and "Restored pi's native clipboard
-  // paste" about the same file.
+  // INVARIANT (mirrored at gate 1b of `offerKeybindingFix`): for a given
+  // configuration only one of the two paste-key flows acts — this one runs only
+  // when the suite will NOT claim the key, the offer only when it will. So no
+  // session creates `keybindings.json` and then empties it, and one run cannot
+  // say both "Created …" and "Restored …" about one file. A user who changes the
+  // setting between sessions legitimately gets *Created* first and *Restored*
+  // later: that is the reversible hatch, not the breach this forbids.
   if (suiteMayClaimPasteKey()) {
     return { kind: "suppressed" };
   }

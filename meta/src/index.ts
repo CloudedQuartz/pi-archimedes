@@ -103,10 +103,10 @@ export default function (pi: ExtensionAPI): void {
   // This handler runs unconditionally on every session_start; the offer's
   // gates (1, 1b, 2–4; and the onboarding's two) make it a no-op when not
   // applicable. Gate 1b is the one that keeps the two paste-key flows apart:
-  // the offer acts only while the suite will hold the key, and
-  // `runNativePasteRestore` at the end of the registration handler below acts
-  // only while it will not — so *Created* and *Restored* can never describe the
-  // same file in one install (issue #133).
+  // under one setting value the offer acts only while the suite will hold the
+  // key and `runNativePasteRestore`, at the end of the registration handler
+  // below, only while it will not — so a single session can never create
+  // keybindings.json and empty it again (issue #133).
   pi.on("session_start", async (_event, ctx: ExtensionContext) => {
     // The offer may block on a user confirm; it must never fail session
     // startup — any throw is logged, never propagated.
