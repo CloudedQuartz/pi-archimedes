@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import type { ModelThinkingLevel, ThinkingLevel } from "@earendil-works/pi-ai";
 import { loadConfig } from "@pi-archimedes/core/settings-io";
 import { diag, describeError } from "@pi-archimedes/core/log";
 import type { SettingItem } from "@earendil-works/pi-tui";
@@ -10,7 +11,7 @@ export interface SessionNameSettings {
   // suite-managed by meta's plugin gate (archimedes.sessionName.enabled — see ADR 0012); session-name never reads this
   enabled?: boolean | undefined;
   model?: string | undefined;
-  reasoning?: ThinkingLevel | null | undefined;
+  reasoning?: ThinkingLevel | "off" | null | undefined;
 }
 
 const DEFAULT_SESSION_NAME_CONFIG: SessionNameSettings = {
@@ -20,14 +21,16 @@ const DEFAULT_SESSION_NAME_CONFIG: SessionNameSettings = {
 
 const NAMESPACE = "archimedes.sessionName";
 
-/** The thinking levels we accept — pi-ai's set, minus `off` (see below). */
-const REASONING_LEVELS: readonly ThinkingLevel[] = [
+/** The thinking levels we accept — pi-ai's set, plus `off` (resolved per
+ * model at the call site: omitting is the only portable spelling of none). */
+const REASONING_LEVELS: readonly (ThinkingLevel | "off")[] = [
   "minimal",
   "low",
   "medium",
   "high",
   "xhigh",
   "max",
+  "off",
 ];
 
 /**
@@ -46,14 +49,15 @@ const REASONING_LEVELS: readonly ThinkingLevel[] = [
  * budget-based Claude it instead misses the four-key budget table, and the
  * resulting `undefined` reaches the provider as an invalid `max_tokens`.
  *
- * Outcomes: a real level (casing/padding tolerated) is forwarded; `null` means
- * omit the option entirely; anything else — including absent — is treated like
- * an absent setting and gets the default, with a log line so the user can find
- * the typo. `"off"` is deliberately not accepted: it would be a fourth
- * spelling of "unset" next to `null` and an absent key, and pi accepts `off` as
- * no-effort anyway wherever it maps one.
+ * Outcomes: a real level (casing/padding tolerated) is returned for the call
+ * site to resolve per model; `null` means omit the option entirely; anything
+ * else — including absent — is treated like an absent setting and gets the
+ * default, with a log line so the user can find the typo. `"off"` is
+ * accepted but never forwarded raw: it resolves through pi's
+ * `clampThinkingLevel` like every other level (nearest supported, warn on
+ * change), because unclamped providers map unknown levels to maximum effort.
  */
-export function resolveTitleReasoning(raw: unknown): ThinkingLevel | null {
+export function resolveTitleReasoning(raw: unknown): ThinkingLevel | "off" | null {
   if (raw === null) return null;
   if (typeof raw === "string") {
     const value = raw.trim().toLowerCase();
@@ -206,8 +210,17 @@ export async function generateTitle(
     if (!ctx.modelRegistry.hasConfiguredAuth(model)) return;
 
     // 5. Stream simple with built-in auth resolution.
-    // Reasoning is resolved, not forwarded raw: see resolveTitleReasoning().
-    const reasoning = resolveTitleReasoning(settings.reasoning);
+    // Reasoning is resolved per model, not forwarded raw: see
+    // resolveTitleReasoning(). `clampThinkingLevel` maps to the nearest level
+    // the model supports (warn on change); only an `off` result omits the
+    // option, which is the single portable spelling of none.
+    const resolved = resolveTitleReasoning(settings.reasoning);
+    const requested: ModelThinkingLevel = resolved === null ? "off" : (resolved ?? "minimal");
+    const clamped = clampThinkingLevel(model, requested);
+    if (clamped !== requested) {
+      diag("session-name", `[archimedes] session-name: reasoning "${requested}" is not supported — using "${clamped}"`);
+    }
+    const reasoning = clamped === "off" ? undefined : clamped;
     const stream = ctx.modelRegistry.streamSimple(
       model,
       {
@@ -220,7 +233,7 @@ export async function generateTitle(
         ],
       },
       {
-        ...(reasoning !== null ? { reasoning } : {}),
+        ...(reasoning !== undefined ? { reasoning } : {}),
         cacheRetention: "none",
         sessionId: crypto.randomUUID(),
       },

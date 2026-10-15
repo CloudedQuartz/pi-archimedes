@@ -40,7 +40,9 @@ function createMockCtx(options: {
     },
   ];
 
-  const defaultModel = { provider: "anthropic", id: "claude-3-5-sonnet" };
+  // Reasoning model without a level map: every named level passes clamp
+  // through, so existing assertions on forwarded levels keep holding.
+  const defaultModel = { provider: "anthropic", id: "claude-3-5-sonnet", reasoning: true };
 
   return {
     sessionManager: {
@@ -132,8 +134,10 @@ describe("generateTitle", () => {
   // anything. A non-level must never reach the provider — see the pin at the
   // end of this block for what that costs.
   describe("reasoning validation", () => {
-    it("passes every real thinking level through untouched", async () => {
-      for (const reasoning of ["minimal", "low", "medium", "high", "xhigh", "max"]) {
+    it("passes every supported thinking level through untouched", async () => {
+      // The mock model has no level map, like the real title model — so only
+      // minimal..high pass through; xhigh/max step down (covered below).
+      for (const reasoning of ["minimal", "low", "medium", "high"]) {
         vi.mocked(loadConfig).mockReturnValueOnce({ reasoning });
         const ctx = createMockCtx({});
         await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
@@ -143,7 +147,19 @@ describe("generateTitle", () => {
       }
     });
 
-    it.each(["Minimal", "  high  ", "MAX"])("tolerates casing and padding: %s", async (raw) => {
+    it.each([["xhigh", "high"], ["MAX", "high"]])("clamps %s to nearest supported %s, warning", async (raw, clamped) => {
+      vi.mocked(loadConfig).mockReturnValueOnce({ reasoning: raw });
+      const ctx = createMockCtx({});
+      clearDiag();
+      await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
+      expect((ctx.modelRegistry.streamSimple as any).mock.calls[0][2].reasoning).toBe(clamped);
+      expect(diag).toHaveBeenCalledWith(
+        "session-name",
+        expect.stringContaining(`using "${clamped}"`),
+      );
+    });
+
+    it.each(["Minimal", "  high  "])("tolerates casing and padding: %s", async (raw) => {
       vi.mocked(loadConfig).mockReturnValueOnce({ reasoning: raw });
       const ctx = createMockCtx({});
       clearDiag();
@@ -154,7 +170,7 @@ describe("generateTitle", () => {
       expect(diag).not.toHaveBeenCalled();
     });
 
-    it.each([["ultra"], ["off"], [""], [42], [true], [{}], [[]]])(
+    it.each([["ultra"], [""], [42], [true], [{}], [[]]])(
       "never forwards a non-level: %s",
       async (raw) => {
         vi.mocked(loadConfig).mockReturnValueOnce({ reasoning: raw });
@@ -174,13 +190,28 @@ describe("generateTitle", () => {
       },
     );
 
-    it("sends no reasoning key when the value is null, and says nothing", async () => {
-      vi.mocked(loadConfig).mockReturnValueOnce({ reasoning: null });
+    it.each([["off"], [null]])("omits the key for %s on models that take it", async (reasoning) => {
+      // Default mock has no level map, so "off" is supported and omitted silently.
+      vi.mocked(loadConfig).mockReturnValueOnce({ reasoning });
       const ctx = createMockCtx({});
       clearDiag();
       await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
       expect((ctx.modelRegistry.streamSimple as any).mock.calls[0][2]).not.toHaveProperty("reasoning");
       expect(diag).not.toHaveBeenCalled();
+    });
+
+    it("clamps off to minimal with a warning where the model excludes it", async () => {
+      // Muse-spark shape: thinking model whose map excludes "off" (null).
+      const model = { provider: "op", id: "spark", reasoning: true, thinkingLevelMap: { off: null } };
+      vi.mocked(loadConfig).mockReturnValueOnce({ reasoning: "off" });
+      const ctx = createMockCtx({ model });
+      clearDiag();
+      await generateTitle(createMockPi() as any, ctx as any, vi.fn(), vi.fn());
+      expect((ctx.modelRegistry.streamSimple as any).mock.calls[0][2].reasoning).toBe("minimal");
+      expect(diag).toHaveBeenCalledWith(
+        "session-name",
+        expect.stringContaining('using "minimal"'),
+      );
     });
 
     it("keeps the default when the setting is absent entirely, and says nothing", async () => {
@@ -199,6 +230,13 @@ describe("generateTitle", () => {
       // loadConfig fills the default in, but the helper is exported.
       clearDiag();
       expect(resolveTitleReasoning(undefined)).toBe("minimal");
+      expect(diag).not.toHaveBeenCalled();
+    });
+
+    it("accepts off for the call site to clamp per model", () => {
+      clearDiag();
+      expect(resolveTitleReasoning("off")).toBe("off");
+      expect(resolveTitleReasoning(" Off ")).toBe("off");
       expect(diag).not.toHaveBeenCalled();
     });
 
@@ -221,15 +259,18 @@ describe("generateTitle", () => {
       for (const level of levels) {
         expect(thinkingBudgetForLevel(level)).toBeTypeOf("number");
       }
-      const junk: unknown[] = ["ultra", "MINIMAL", "off", "", "Max ", 42, true, {}, []];
+      const junk: unknown[] = ["ultra", "MINIMAL", "", "Max ", 42, true, {}, []];
       for (const value of junk) {
         expect(thinkingBudgetForLevel(value as never)).toBeUndefined();
       }
 
-      // Whatever the setting holds, the value we forward is always safe to send.
+      // Whatever the setting holds, the value reaching clamp is a real level
+      // or "off" — never raw input. "off" is resolved per model at the call
+      // site (nearest supported, warn on change), never forwarded verbatim.
       for (const raw of [...levels, ...junk, null, undefined]) {
         const resolved = resolveTitleReasoning(raw);
         if (resolved === null) continue; // omitted → no level requested
+        if (resolved === "off") continue; // clamped per model at the call site
         expect(levels).toContain(resolved);
         expect(thinkingBudgetForLevel(resolved)).toBeTypeOf("number");
       }
