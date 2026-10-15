@@ -41,7 +41,7 @@ After installing Pi, choose one installation command above, then `cd` into your 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `model` | string | _(current model)_ | Model used for title generation (e.g. `openai/gpt-4o-mini`). Canonical `provider/id`, bare IDs, and thinking-suffix forms are all resolved. Empty = current model. |
-| `reasoning` | string \| null | `minimal` | Thinking level for the title request: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `off`. Resolved to the nearest level the model supports (warns on change); `off`/`null` omit the option. Case and stray spaces are tolerated (`" Minimal "` works). Anything unrecognised is ignored in favour of the default and logged. Only supported levels reach the provider: the setting resolves through pi's clamp to the nearest level the model supports. |
+| `reasoning` | string \| null | `minimal` | Thinking level for the title request: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `off`. Resolved to the nearest level the model supports (warns on change); the option is omitted only when that resolves to `"off"`. `off`/`null` therefore request no thinking but can still send a level on models that exclude it — use `"minimal"` for bounded-small everywhere. Case and stray spaces are tolerated (`" Minimal "` works). Anything unrecognised is ignored in favour of the default and logged. Only supported levels reach the provider: the setting resolves through pi's clamp to the nearest level the model supports. |
 
 `model` is also editable in the `/archimedes` panel (**Model for naming** — Enter to type, blank to go back to the current model); `reasoning` is JSON-only.
 
